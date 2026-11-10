@@ -4,6 +4,7 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { Badge, Button, Card, CardHeader, Input, Modal, SeverityBadge, SuccessBadge, toast } from "@/components/ui";
 import { useThemeStore, type ThemePreference } from "@/store/useThemeStore";
 import { cn } from "@/lib/cn";
+import { isSupabaseConfigured } from "@/lib/supabase";
 
 const THEME_OPTIONS: { value: ThemePreference; label: string; icon: LucideIcon }[] = [
   { value: "system", label: "System", icon: Monitor },
@@ -23,7 +24,9 @@ export default function Settings() {
       <PageHeader
         title="Settings"
         description="Appearance now. Check thresholds, currency and data tools arrive in a later phase."
-        actions={<Badge tone="neutral">Backend: not connected (local mode)</Badge>}
+        actions={<Badge tone={isSupabaseConfigured ? "brand" : "neutral"}>
+            {isSupabaseConfigured ? "Backend: Supabase connected" : "Backend: not connected (local mode)"}
+          </Badge>}
       />
 
       <div className="grid gap-6">
