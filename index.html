@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="ContractSoup audits healthcare insurance contracts for hidden fees and pricing problems. Your files never leave this device." />
+    <meta name="theme-color" content="#0F5C4D" />
+    <title>ContractSoup | Healthcare contract audit</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230F5C4D'/%3E%3Cpath d='M7 15h18a9 9 0 0 1-18 0z' fill='%23fff'/%3E%3Ccircle cx='16' cy='9' r='2.2' fill='%23E8A23B'/%3E%3C/svg%3E"
+    />
+    <script>
+      // Set the theme before first paint to avoid a flash.
+      (function () {
+        try {
+          var stored = JSON.parse(localStorage.getItem("contractsoup-theme") || "null");
+          var pref = stored && stored.state && stored.state.preference ? stored.state.preference : "system";
+          var dark = pref === "dark" || (pref === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "light");
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
