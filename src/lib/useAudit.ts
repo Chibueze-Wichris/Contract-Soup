@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Audit, Finding } from "@/analyzer";
 import { summarizeFindings } from "@/analyzer/summary";
 import { AuditStorageError, auditRepo } from "@/lib/auditRepo";
+import { STORAGE_TEXT } from "@/lib/storageText";
 
 export type AuditLoad =
   | { status: "loading" }
@@ -14,8 +15,8 @@ export type FindingPatch = Partial<Pick<Finding, "status" | "note">>;
 
 export interface UseAudit {
   load: AuditLoad;
-  /** True when the latest change could not be written to this device. */
-  saveFailed: boolean;
+  /** Why the latest change could not be saved, or null when everything is saved. */
+  saveError: string | null;
   /** Reads the audit from storage again. */
   reload: () => void;
   /** Changes a finding, recalculates the totals and saves the audit. */
@@ -37,7 +38,7 @@ function applyPatch(finding: Finding, patch: FindingPatch): Finding {
 /** Loads one saved audit and keeps it saved as its findings are reviewed. */
 export function useAudit(id: string | undefined): UseAudit {
   const [load, setLoad] = useState<AuditLoad>({ status: "loading" });
-  const [saveFailed, setSaveFailed] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const latest = useRef<Audit | null>(null);
   const queue = useRef<Promise<void>>(Promise.resolve());
@@ -45,7 +46,7 @@ export function useAudit(id: string | undefined): UseAudit {
   useEffect(() => {
     let current = true;
     latest.current = null;
-    setSaveFailed(false);
+    setSaveError(null);
     if (!id) {
       setLoad({ status: "missing" });
       return;
@@ -71,14 +72,18 @@ export function useAudit(id: string | undefined): UseAudit {
     };
   }, [id, attempt]);
 
-  // Writes are queued so they reach storage in the order the changes were made.
+  // Writes are queued so they reach storage in the order the changes were made. Only the findings are
+  // written, so a rename made on another page in the meantime is not undone.
   const persist = useCallback((audit: Audit) => {
     queue.current = queue.current.then(async () => {
       try {
-        await auditRepo.save(audit);
-        if (latest.current === audit) setSaveFailed(false);
-      } catch {
-        if (latest.current?.id === audit.id) setSaveFailed(true);
+        await auditRepo.update(audit.id, { findings: audit.findings });
+        if (latest.current === audit) setSaveError(null);
+      } catch (err) {
+        if (latest.current?.id !== audit.id) return;
+        setSaveError(
+          err instanceof AuditStorageError ? err.message : `The change could not be saved ${STORAGE_TEXT.savedTo}. Try again.`,
+        );
       }
     });
   }, []);
@@ -109,5 +114,5 @@ export function useAudit(id: string | undefined): UseAudit {
 
   const reload = useCallback(() => setAttempt((n) => n + 1), []);
 
-  return { load, saveFailed, reload, updateFinding, retrySave };
+  return { load, saveError, reload, updateFinding, retrySave };
 }

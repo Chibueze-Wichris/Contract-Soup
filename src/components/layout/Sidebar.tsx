@@ -4,6 +4,7 @@ import { Logo } from "./Logo";
 import { Badge } from "@/components/ui";
 import { NAV_ITEMS, PRIVACY_LINE } from "@/lib/nav";
 import { cn } from "@/lib/cn";
+import { isSupabaseConfigured } from "@/lib/supabase";
 
 /** Desktop navigation. Hidden below the md breakpoint, where MobileTabBar takes over. */
 export function Sidebar() {
@@ -44,11 +45,24 @@ export function Sidebar() {
           <Lock className="mt-0.5 h-4 w-4 shrink-0 text-brand" aria-hidden="true" />
           <p className="text-xs text-muted">
             <span className="block font-medium text-ink">{PRIVACY_LINE}</span>
-            Files are read in your browser and saved only in local storage.
+            {isSupabaseConfigured
+              ? "Files are read in your browser. Only your reports are saved to your account."
+              : "Files are read in your browser and saved only in local storage."}
           </p>
         </div>
         <div className="mt-3">
-          <Badge tone="neutral">Backend: not connected (local mode)</Badge>
+          <Badge tone={isSupabaseConfigured ? "brand" : "neutral"} className="rounded-xl whitespace-normal">
+            {isSupabaseConfigured ? (
+              "Backend: Supabase connected"
+            ) : (
+              // On one line this label is wider than the card, so it is broken where it reads best.
+              <span>
+                Backend: not connected{" "}
+                <br />
+                (local mode)
+              </span>
+            )}
+          </Badge>
         </div>
       </div>
     </aside>

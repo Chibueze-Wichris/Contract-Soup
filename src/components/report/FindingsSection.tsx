@@ -21,12 +21,13 @@ import { FindingRow } from "./FindingRow";
 interface FindingsSectionProps {
   audit: Audit;
   onUpdate: (findingId: string, patch: FindingPatch) => void;
-  saveFailed: boolean;
+  /** Why the latest change could not be saved, or null when everything is saved. */
+  saveError: string | null;
   onRetrySave: () => void;
 }
 
 /** The list of findings with its filters, and the panel that opens for one finding. */
-export function FindingsSection({ audit, onUpdate, saveFailed, onRetrySave }: FindingsSectionProps) {
+export function FindingsSection({ audit, onUpdate, saveError, onRetrySave }: FindingsSectionProps) {
   const headingId = useId();
   const [filter, setFilter] = useState<FindingFilter>(NO_FILTER);
   const [sort, setSort] = useState<FindingSort>("severity");
@@ -118,7 +119,7 @@ export function FindingsSection({ audit, onUpdate, saveFailed, onRetrySave }: Fi
         onNavigate={(id) => setOpen((current) => (current ? { ...current, id } : current))}
         onClose={() => setOpen(null)}
         onUpdate={onUpdate}
-        saveFailed={saveFailed}
+        saveError={saveError}
         onRetrySave={onRetrySave}
       />
     </section>

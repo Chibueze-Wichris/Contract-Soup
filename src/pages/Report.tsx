@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { CheckCircle2, Download } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Download } from "lucide-react";
 import type { Audit } from "@/analyzer";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { EmptyBowl } from "@/components/illustrations/EmptyBowl";
@@ -8,6 +8,7 @@ import { FindingsSection } from "@/components/report/FindingsSection";
 import { ReportSummary } from "@/components/report/ReportSummary";
 import { TermsUsed } from "@/components/report/TermsUsed";
 import { Button, Card, Notice, PageSkeleton, buttonClasses, toast } from "@/components/ui";
+import { STORAGE_PLACE } from "@/lib/auditRepo";
 import { formatCount, formatDateTime, plural } from "@/lib/format";
 import { useAudit, type FindingPatch } from "@/lib/useAudit";
 
@@ -18,10 +19,13 @@ function MissingReport() {
       <PageHeader title="Audit report" />
       <Card className="flex flex-col items-center py-12 text-center">
         <EmptyBowl className="h-32 w-auto" />
-        <h2 className="mt-6 text-lg font-semibold">This report is not on this device</h2>
+        <h2 className="mt-6 text-lg font-semibold">
+          {STORAGE_PLACE === "account" ? "This report is not in your account" : "This report is not on this device"}
+        </h2>
         <p className="mt-2 max-w-md text-sm text-muted">
-          Reports are kept in the browser they were made in. This one may have been made in another browser, or this
-          browser's saved data was cleared.
+          {STORAGE_PLACE === "account"
+            ? "It may have been deleted, or it may belong to a different account. A report made in this browser before reports were kept in accounts can be moved into yours from Saved reports."
+            : "Reports are kept in the browser they were made in. This one may have been made in another browser, it may have been deleted, or this browser's saved data was cleared."}
         </p>
         <div className="mt-5 flex flex-wrap justify-center gap-2">
           <Link to="/audit/new" className={buttonClasses("primary", "md")}>
@@ -39,11 +43,12 @@ function MissingReport() {
 interface ReportBodyProps {
   audit: Audit;
   onUpdate: (findingId: string, patch: FindingPatch) => void;
-  saveFailed: boolean;
+  /** Why the latest change could not be saved, or null when everything is saved. */
+  saveError: string | null;
   onRetrySave: () => void;
 }
 
-function ReportBody({ audit, onUpdate, saveFailed, onRetrySave }: ReportBodyProps) {
+function ReportBody({ audit, onUpdate, saveError, onRetrySave }: ReportBodyProps) {
   const [exporting, setExporting] = useState(false);
   const confirmedTerms = audit.terms.filter((t) => t.confirmed).length;
   const hasClaims = audit.claimsCount > 0;
@@ -65,6 +70,13 @@ function ReportBody({ audit, onUpdate, saveFailed, onRetrySave }: ReportBodyProp
 
   return (
     <>
+      <Link
+        to="/reports"
+        className="mb-3 inline-flex items-center gap-1.5 rounded-md text-sm text-muted transition-colors duration-150 hover:text-ink"
+      >
+        <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+        Saved reports
+      </Link>
       <PageHeader
         title={audit.name}
         description={[
@@ -80,9 +92,10 @@ function ReportBody({ audit, onUpdate, saveFailed, onRetrySave }: ReportBodyProp
       />
 
       <div className="space-y-6">
-        {saveFailed ? (
-          <Notice tone="error" title="Your last change could not be saved on this device">
-            <p>It is shown here, but it will be lost when you leave this page.</p>
+        {saveError ? (
+          <Notice tone="error" title="Your last change was not saved">
+            <p>{saveError}</p>
+            <p className="mt-1">It is shown here, but it will be lost when you leave this page.</p>
             <Button variant="secondary" size="sm" className="mt-2" onClick={onRetrySave}>
               Try again
             </Button>
@@ -103,7 +116,7 @@ function ReportBody({ audit, onUpdate, saveFailed, onRetrySave }: ReportBodyProp
         {audit.findings.length > 0 ? (
           <>
             <ReportSummary audit={audit} />
-            <FindingsSection audit={audit} onUpdate={onUpdate} saveFailed={saveFailed} onRetrySave={onRetrySave} />
+            <FindingsSection audit={audit} onUpdate={onUpdate} saveError={saveError} onRetrySave={onRetrySave} />
           </>
         ) : (
           <Card className="flex flex-col items-center py-10 text-center">
@@ -136,7 +149,7 @@ function ReportBody({ audit, onUpdate, saveFailed, onRetrySave }: ReportBodyProp
 /** One saved audit: the headline figures, the findings to review, and the contract terms they were checked against. */
 export default function Report() {
   const { id } = useParams<{ id: string }>();
-  const { load, saveFailed, reload, updateFinding, retrySave } = useAudit(id);
+  const { load, saveError, reload, updateFinding, retrySave } = useAudit(id);
 
   if (load.status === "loading") return <PageSkeleton />;
   if (load.status === "missing") return <MissingReport />;
@@ -153,5 +166,5 @@ export default function Report() {
       </>
     );
   }
-  return <ReportBody audit={load.audit} onUpdate={updateFinding} saveFailed={saveFailed} onRetrySave={retrySave} />;
+  return <ReportBody audit={load.audit} onUpdate={updateFinding} saveError={saveError} onRetrySave={retrySave} />;
 }

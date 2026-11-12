@@ -9,6 +9,7 @@ import { Stepper } from "@/components/audit/Stepper";
 import { UploadStep } from "@/components/audit/UploadStep";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button, Card, Modal, buttonClasses } from "@/components/ui";
+import { STORAGE_TEXT } from "@/lib/storageText";
 import { isDraftEmpty, useDraftAuditStore } from "@/store/useDraftAuditStore";
 
 /** The New Audit wizard: upload a contract, review its terms, add claims, run the audit. */
@@ -90,7 +91,7 @@ export default function NewAudit() {
           </span>
           <h2 className="mt-4 text-lg font-semibold">Your audit is ready</h2>
           <p className="mt-2 max-w-md text-sm text-muted">
-            It finished while you were on another page and is saved on this device.
+            It finished while you were on another page and is saved {STORAGE_TEXT.savedIn}.
           </p>
           <div className="mt-6 flex flex-wrap justify-center gap-3">
             <Link to={`/reports/${finishedAuditId}`} className={buttonClasses("primary", "md")} onClick={clearFinished}>

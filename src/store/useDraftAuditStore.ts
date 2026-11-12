@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { DEFAULT_SETTINGS, getAnalyzer, type Audit, type ContractTerm, type Settings } from "@/analyzer";
+import { getAnalyzer, type Audit, type ContractTerm } from "@/analyzer";
 import { categoryLabel } from "@/analyzer/categories";
 import { summarizeFindings } from "@/analyzer/summary";
 import { toast } from "@/components/ui";
@@ -22,6 +22,7 @@ import {
 import { PdfExtractionError, extractPages, validatePdfFile } from "@/lib/pdf";
 import { nextManualTermId } from "@/lib/terms";
 import { useAuthStore } from "@/store/useAuthStore";
+import { currentSettings } from "@/store/useSettingsStore";
 
 /**
  * The audit being put together in the New Audit wizard.
@@ -227,11 +228,6 @@ export function defaultAuditName(fileName: string): string {
     .replace(/\s+/g, " ")
     .trim();
   return base || "Untitled audit";
-}
-
-/** The tolerances a run uses. Phase 4 reads them from the Settings page instead. */
-export function currentSettings(): Settings {
-  return DEFAULT_SETTINGS;
 }
 
 /** True when the claims step holds nothing that blocks a run: no file, or a file whose rows are usable. */

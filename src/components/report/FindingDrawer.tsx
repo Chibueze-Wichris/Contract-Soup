@@ -5,6 +5,7 @@ import { findingTypeLabel } from "@/analyzer/categories";
 import { Badge, Button, Drawer, Notice, SeverityBadge, Textarea } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import { FINDING_STATUSES, evidenceSource, impactText } from "@/lib/findings";
+import { STORAGE_TEXT } from "@/lib/storageText";
 import type { FindingPatch } from "@/lib/useAudit";
 import { StatusBadge } from "./StatusBadge";
 
@@ -21,7 +22,8 @@ interface FindingDrawerProps {
   onNavigate: (findingId: string) => void;
   onClose: () => void;
   onUpdate: (findingId: string, patch: FindingPatch) => void;
-  saveFailed: boolean;
+  /** Why the latest change could not be saved, or null when everything is saved. */
+  saveError: string | null;
   onRetrySave: () => void;
 }
 
@@ -64,7 +66,7 @@ function NoteField({ finding, onSave }: { finding: Finding; onSave: (note: strin
       maxLength={NOTE_LIMIT}
       value={text}
       placeholder="What you decided, who you asked, what the vendor said"
-      hint="Optional. Kept with this report on this device and included in the PDF."
+      hint="Optional. Kept with this report and included in the PDF."
       onChange={(e) => {
         typed.current = e.target.value;
         setText(e.target.value);
@@ -77,11 +79,12 @@ function NoteField({ finding, onSave }: { finding: Finding; onSave: (note: strin
 interface FindingDetailsProps {
   finding: Finding;
   onUpdate: (findingId: string, patch: FindingPatch) => void;
-  saveFailed: boolean;
+  /** Why the latest change could not be saved, or null when everything is saved. */
+  saveError: string | null;
   onRetrySave: () => void;
 }
 
-function FindingDetails({ finding, onUpdate, saveFailed, onRetrySave }: FindingDetailsProps) {
+function FindingDetails({ finding, onUpdate, saveError, onRetrySave }: FindingDetailsProps) {
   const dismissed = finding.status === "dismissed";
   return (
     <>
@@ -170,15 +173,16 @@ function FindingDetails({ finding, onUpdate, saveFailed, onRetrySave }: FindingD
         <div className="mt-4">
           <NoteField finding={finding} onSave={(note) => onUpdate(finding.id, { note })} />
         </div>
-        {saveFailed ? (
-          <Notice tone="error" className="mt-3" title="Your last change could not be saved on this device">
-            <p>It is shown here, but it will be lost when you leave this page.</p>
+        {saveError ? (
+          <Notice tone="error" className="mt-3" title="Your last change was not saved">
+            <p>{saveError}</p>
+            <p className="mt-1">It is shown here, but it will be lost when you leave this page.</p>
             <Button variant="secondary" size="sm" className="mt-2" onClick={onRetrySave}>
               Try again
             </Button>
           </Notice>
         ) : (
-          <p className="mt-3 text-xs text-muted">Your review is saved on this device as you make it.</p>
+          <p className="mt-3 text-xs text-muted">Your review is saved {STORAGE_TEXT.savedIn} as you make it.</p>
         )}
       </Section>
     </>
@@ -186,7 +190,7 @@ function FindingDetails({ finding, onUpdate, saveFailed, onRetrySave }: FindingD
 }
 
 /** Side panel for one finding: what was found, the evidence, how the number was worked out, and the reviewer's decision. */
-export function FindingDrawer({ findings, open, onNavigate, onClose, onUpdate, saveFailed, onRetrySave }: FindingDrawerProps) {
+export function FindingDrawer({ findings, open, onNavigate, onClose, onUpdate, saveError, onRetrySave }: FindingDrawerProps) {
   const finding = open ? (findings.find((f) => f.id === open.id) ?? null) : null;
   const order = open?.order ?? [];
   const index = open ? order.indexOf(open.id) : -1;
@@ -233,7 +237,7 @@ export function FindingDrawer({ findings, open, onNavigate, onClose, onUpdate, s
           <p className="sr-only" aria-live="polite">
             {position}: {finding.title}
           </p>
-          <FindingDetails key={finding.id} finding={finding} onUpdate={onUpdate} saveFailed={saveFailed} onRetrySave={onRetrySave} />
+          <FindingDetails key={finding.id} finding={finding} onUpdate={onUpdate} saveError={saveError} onRetrySave={onRetrySave} />
         </>
       ) : null}
     </Drawer>

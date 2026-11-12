@@ -1,16 +1,14 @@
 import type { ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
 import { CheckCircle2, Circle, Loader2, Play } from "lucide-react";
 import { StepFooter, StepShell } from "./StepShell";
 import { Button, Input, Notice, ProgressBar } from "@/components/ui";
+import { STORAGE_PLACE } from "@/lib/auditRepo";
 import { cn } from "@/lib/cn";
 import { plural } from "@/lib/format";
-import {
-  RUN_PHASES,
-  currentSettings,
-  defaultAuditName,
-  useDraftAuditStore,
-  type WizardStep,
-} from "@/store/useDraftAuditStore";
+import { STORAGE_TEXT } from "@/lib/storageText";
+import { RUN_PHASES, defaultAuditName, useDraftAuditStore, type WizardStep } from "@/store/useDraftAuditStore";
+import { useSettingsStore } from "@/store/useSettingsStore";
 
 interface SummaryRowProps {
   label: string;
@@ -49,11 +47,13 @@ export function RunStep({ focusHeading }: { focusHeading: boolean }) {
   const goToStep = useDraftAuditStore((s) => s.goToStep);
   const previousStep = useDraftAuditStore((s) => s.previousStep);
   const runAudit = useDraftAuditStore((s) => s.runAudit);
+  const feeTolerancePct = useSettingsStore((s) => s.feeTolerancePct);
+  const outlierSigma = useSettingsStore((s) => s.outlierSigma);
+  const navigate = useNavigate();
 
   const running = run.status === "running";
   const result = claims.status === "ready" ? claims.result : null;
   const claimCount = result?.claims.length ?? 0;
-  const settings = currentSettings();
   const open = (step: WizardStep) => (running ? undefined : () => goToStep(step));
 
   return (
@@ -98,11 +98,28 @@ export function RunStep({ focusHeading }: { focusHeading: boolean }) {
             <span className="font-medium">No claims file</span>
           )}
         </SummaryRow>
-        <SummaryRow label="Thresholds">
+        {/* The draft is kept while Settings is open, so this is a safe trip. */}
+        <SummaryRow label="Thresholds" action="Change" onAction={running ? undefined : () => navigate("/settings")}>
           <span className="num text-muted">
-            Fee differences under {settings.feeTolerancePct}% are ignored. A charge counts as unusually high when it is
-            more than {settings.outlierSigma} standard deviations above the average for its category.
+            Fee differences under {feeTolerancePct}% are ignored. A charge counts as unusually high when it is more
+            than {outlierSigma} standard deviations above the average for its category.
           </span>
+        </SummaryRow>
+        <SummaryRow label="Where the report is saved">
+          {STORAGE_PLACE === "account" ? (
+            <>
+              <span className="font-medium">In your account</span>
+              <span className="block text-muted">
+                Only the report is saved there: the contract terms with their short excerpts, the findings and the
+                totals. Your contract and claims files are not uploaded.
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="font-medium">On this device</span>
+              <span className="block text-muted">Nothing is uploaded.</span>
+            </>
+          )}
         </SummaryRow>
       </dl>
 
@@ -144,7 +161,7 @@ export function RunStep({ focusHeading }: { focusHeading: boolean }) {
             ))}
           </ol>
           <p className="mt-4 text-xs text-muted">
-            You can leave this page. The audit keeps going and is saved on this device when it finishes.
+            You can leave this page. The audit keeps going and is saved {STORAGE_TEXT.savedIn} when it finishes.
           </p>
           <p className="sr-only" role="status">
             {RUN_PHASES[run.phase]}
