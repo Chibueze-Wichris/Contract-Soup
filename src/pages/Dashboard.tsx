@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { FilePlus2, FlaskConical } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { EmptyBowl } from "@/components/illustrations/EmptyBowl";
@@ -12,6 +12,22 @@ const STATS = [
 
 /** Phase 0 placeholder. Real stats and the recent audits list arrive in Phase 4. */
 export default function Dashboard() {
+  const navigate = useNavigate();
+
+  /** Loads the built-in sample into the New Audit wizard, unless an audit is already under way there. */
+  async function trySample(): Promise<void> {
+    try {
+      // Loaded on demand, so the wizard's code is not part of the dashboard.
+      const { isDraftEmpty, useDraftAuditStore } = await import("@/store/useDraftAuditStore");
+      const draft = useDraftAuditStore.getState();
+      if (isDraftEmpty(draft)) void draft.loadSample();
+      else toast.info("You already have an audit under way. Use Start over to load the sample instead.");
+    } catch {
+      // The New Audit page shows its own error if its code cannot be loaded.
+    }
+    navigate("/audit/new");
+  }
+
   return (
     <>
       <PageHeader
@@ -45,7 +61,7 @@ export default function Dashboard() {
             variant="secondary"
             size="lg"
             icon={<FlaskConical className="h-4 w-4" />}
-            onClick={() => toast.info("Sample audit data arrives in Phase 1.")}
+            onClick={() => void trySample()}
           >
             Try a sample audit
           </Button>
