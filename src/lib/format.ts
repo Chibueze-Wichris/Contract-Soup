@@ -20,6 +20,20 @@ export function formatIsoDate(iso: string): string {
   return Number.isNaN(time) ? iso : DAY.format(time);
 }
 
+const DATE_TIME = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
+
+/** "2026-11-11T15:22:05.000Z" -> "Nov 11, 2026, 3:22 PM", in the reader's own time zone. */
+export function formatDateTime(iso: string): string {
+  const time = Date.parse(iso);
+  return Number.isNaN(time) ? iso : DATE_TIME.format(time);
+}
+
 /** 1536 -> "1.5 KB". Counted in 1024s, the same way the upload limits are. */
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

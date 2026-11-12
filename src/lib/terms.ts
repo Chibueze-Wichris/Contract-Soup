@@ -57,6 +57,15 @@ export function formatTermValue(value: ContractTerm["value"]): string {
   return typeof value === "number" ? value.toLocaleString("en-US", { maximumFractionDigits: 6 }) : value;
 }
 
+/** "24.5 USD PEPM", "90%", "Clause present", or "No value" when nothing was entered. */
+export function describeTermValue(term: Pick<ContractTerm, "value" | "unit">): string {
+  if (term.value === null) return "No value";
+  const value = formatTermValue(term.value);
+  if (!term.unit) return value;
+  if (term.unit === "%") return `${value}%`;
+  return `${value} ${TERM_UNITS.find((u) => u.value === term.unit)?.label ?? term.unit}`;
+}
+
 /** The name to show for a term: its own label, or its category when the label was left empty. */
 export function termTitle(term: Pick<ContractTerm, "label" | "category">): string {
   return term.label.trim() || categoryLabel(term.category);
