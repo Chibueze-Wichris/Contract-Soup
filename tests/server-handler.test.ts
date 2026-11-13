@@ -269,19 +269,34 @@ test("only POST is served, and a preflight is answered without signing in", asyn
   assert.equal(res.headers.get("access-control-allow-origin"), "*", "answers carry the CORS header too");
 });
 
-test("a list of allowed websites is honoured", async () => {
-  const env = { AI_ALLOWED_ORIGINS: "https://app.example.com, http://localhost:5173" };
-  const allowed = makeWorld({ gemini: [answer()], env });
+test("a list of allowed websites is honoured, and a refusal can be read by the page that was refused", async () => {
+  const env = { AI_ALLOWED_ORIGINS: "https://app.example.com, http://localhost:5173/" };
+  const allowed = makeWorld({ gemini: [answer(), answer()], env });
   const good = await allowed.handle(request({ body: EXTRACT }));
   assert.equal(good.status, 200);
-  assert.equal(good.headers.get("access-control-allow-origin"), "https://app.example.com");
-  assert.equal(good.headers.get("vary"), "Origin");
+  const local = await allowed.handle(request({ body: EXTRACT, headers: { Origin: "http://localhost:5173" } }));
+  assert.equal(local.status, 200, "an entry typed with a trailing slash still matches");
 
   const elsewhere = makeWorld({ gemini: [answer()], env });
   const bad = await elsewhere.handle(request({ body: EXTRACT, headers: { Origin: "https://evil.example" } }));
   assert.equal(bad.status, 403);
-  assert.equal(bad.headers.get("access-control-allow-origin"), null);
-  assert.equal(elsewhere.seen.length, 0, "not even the session is looked at");
+  assert.equal(readErrorResponse(await bad.json())?.code, "origin_not_allowed");
+  assert.equal(elsewhere.seen.length, 0, "not even the session is looked at, and nothing reaches Gemini");
+  // A browser only shows a page the answers that carry this header. Without it the app could not tell
+  // "this website is not allowed" from "the connection failed".
+  assert.equal(bad.headers.get("access-control-allow-origin"), "*");
+  const preflight = await elsewhere.handle(
+    new Request("https://project.supabase.test/functions/v1/extract-contract-terms", {
+      method: "OPTIONS",
+      headers: { Origin: "https://evil.example", "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "authorization, apikey, content-type" },
+    }),
+  );
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("access-control-allow-origin"), "*", "so the browser goes on to the request, and gets the refusal it can read");
+  assert.equal(elsewhere.seen.length, 0);
+
+  const sandboxed = await elsewhere.handle(request({ body: EXTRACT, headers: { Origin: "null" } }));
+  assert.equal(sandboxed.status, 403, "a page with no origin of its own is not on the list either");
 });
 
 test("Gemini failures are reported in plain words, with the right status and no silent success", async () => {

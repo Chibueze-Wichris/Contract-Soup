@@ -37,15 +37,17 @@ export function UploadStep({ focusHeading }: { focusHeading: boolean }) {
   const retryAiReading = useDraftAuditStore((s) => s.retryAiReading);
   const switchToBuiltInReader = useDraftAuditStore((s) => s.switchToBuiltInReader);
   const waitingForConsent = useDraftAuditStore((s) => AI_READER_AVAILABLE && s.reader === "gemini" && !s.aiConsent);
+  const mayAskGemini = useDraftAuditStore((s) => AI_READER_AVAILABLE && s.reader === "gemini" && s.aiConsent);
   const nextStep = useDraftAuditStore((s) => s.nextStep);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [dropError, setDropError] = useState("");
+  const [retryRefused, setRetryRefused] = useState(false);
 
   const { status } = contract;
   const sample = contract.source === "sample";
   const withGemini = contract.reader === "gemini";
   const pagesKnown = (contract.stage === "pages" || (contract.stage === "ai" && contract.pagesDone > 0)) && contract.pagesTotal > 0;
-  const blocked = waitingForConsent ? "Tick the box above to agree to send this contract's text to Google Gemini, or choose the built-in reader." : undefined;
+  const blocked = waitingForConsent ? "Tick the box below to agree to send this contract's text to Google Gemini, or choose the built-in reader." : undefined;
   const report = contract.aiReport;
 
   return (
@@ -67,12 +69,26 @@ export function UploadStep({ focusHeading }: { focusHeading: boolean }) {
         >
           <p>{contract.error}</p>
           <p className="mt-1">
-            Nothing has been read in its place. You can ask Gemini again, or have the built-in reader read this
-            contract on this device instead.
+            {contract.aiFailure.retryable
+              ? "Nothing has been read in its place. You can ask Gemini again, or have the built-in reader read this contract on this device instead."
+              : "Nothing has been read in its place. You can have the built-in reader read this contract on this device instead."}
           </p>
+          {retryRefused && !mayAskGemini ? (
+            <p className="mt-1" role="status">
+              To ask Gemini again, choose the Gemini reader below and tick the box to agree.
+            </p>
+          ) : null}
           <div className="mt-2 flex flex-wrap gap-2">
             {contract.aiFailure.retryable ? (
-              <Button variant="secondary" size="sm" onClick={() => void retryAiReading()}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  // The agreement can have been withdrawn since the failure. Nothing is sent without it.
+                  setRetryRefused(!mayAskGemini);
+                  if (mayAskGemini) void retryAiReading();
+                }}
+              >
                 Try Gemini again
               </Button>
             ) : null}

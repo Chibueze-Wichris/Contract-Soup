@@ -66,30 +66,32 @@ function newRequestId(): string {
 
 interface Cors {
   headers: Record<string, string>;
-  /** False when a list of allowed origins is set and this request's origin is not on it. */
+  /** False when a list of allowed websites is set and this request comes from a page that is not on it. */
   allowed: boolean;
 }
 
+/** An origin as a browser writes it: no path and no trailing slash. A list entry typed with one still matches. */
+const asOrigin = (value: string): string => value.trim().replace(/\/+$/, "").toLowerCase();
+
+/**
+ * Every answer may be read by the page that asked, a refusal included, so the app can say why it
+ * was refused instead of reporting a failed connection. Which websites may use the reader is
+ * decided on the request itself (see `allowed`), not by hiding the answer from the browser: these
+ * headers only govern what a page may read, and no cookie is involved.
+ */
 function corsFor(req: Request, allowedOrigins: readonly string[]): Cors {
   const origin = req.headers.get("origin");
   const asked = req.headers.get("access-control-request-headers");
   const headers: Record<string, string> = {
+    "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     // Whatever headers the Supabase client sends are allowed. They carry no authority of their own.
     "Access-Control-Allow-Headers": asked && /^[A-Za-z0-9\-_, ]{1,400}$/.test(asked) ? asked : DEFAULT_ALLOWED_HEADERS,
     "Access-Control-Max-Age": "86400",
   };
-  if (allowedOrigins.length === 0) {
-    headers["Access-Control-Allow-Origin"] = "*";
-    return { headers, allowed: true };
-  }
-  headers.Vary = "Origin";
-  if (origin && allowedOrigins.includes(origin)) {
-    headers["Access-Control-Allow-Origin"] = origin;
-    return { headers, allowed: true };
-  }
   // No Origin header means the caller is not a browser page. It still has to sign in like anyone else.
-  return { headers, allowed: origin === null };
+  const allowed = allowedOrigins.length === 0 || origin === null || allowedOrigins.some((o) => asOrigin(o) === asOrigin(origin));
+  return { headers, allowed };
 }
 
 /** The project's publishable key, which the Auth server asks for alongside the user's token. */

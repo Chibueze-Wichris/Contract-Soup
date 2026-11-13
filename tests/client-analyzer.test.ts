@@ -344,6 +344,21 @@ const FAILURES: FailureCase[] = [
     transport: async () => ({ status: 404, body: { code: "NOT_FOUND", message: "Requested function was not found" } }),
     message: /extract-contract-terms/,
   },
+  {
+    // What a browser reports for a missing function: Supabase's "not found" carries no cross-origin headers, so it cannot be read.
+    name: "the project answers but the function's answer cannot be read",
+    code: "not_deployed",
+    retryable: true,
+    transport: async () => ({ status: 0, body: null, failure: "no_answer" }),
+    message: /most likely not been deployed/,
+  },
+  {
+    name: "the website is not on the function's list of allowed websites",
+    code: "forbidden",
+    retryable: false,
+    wire: { env: { AI_ALLOWED_ORIGINS: "https://somewhere-else.example" } },
+    message: /not allowed/,
+  },
   { name: "no Gemini key on the server", code: "not_configured", retryable: false, wire: { env: { GEMINI_API_KEY: undefined } } },
   { name: "the placeholder key is still in place", code: "not_configured", retryable: false, wire: { env: { GEMINI_API_KEY: "your-gemini-api-key" } } },
   {

@@ -40,9 +40,16 @@ export const GEMINI_ANALYZER_VERSION = "gemini-hybrid-1.0.0";
 export interface AiTransportResult {
   status: number;
   body: unknown;
-  /** Why no answer arrived, when status is 0. */
-  failure?: "offline" | "timeout" | "signed_out";
+  /**
+   * Why no answer arrived, when status is 0. "no_answer" means the project could be reached but the
+   * function's answer could not be read, which is what a browser sees when the function is missing.
+   */
+  failure?: "offline" | "timeout" | "signed_out" | "no_answer";
 }
+
+/** Said in the audit and in Settings when the project answers but the function's answer cannot be read. */
+export const NO_ANSWER_MESSAGE =
+  "The AI reader gave no answer that could be read. Your Supabase project itself can be reached, so the extract-contract-terms function has most likely not been deployed on it yet, or it failed to start.";
 
 /** Sends one request to the Edge Function. Passed in, so this file has no dependency on Supabase and can be tested without a network. */
 export type AiTransport = (body: ExtractRequestBody, signal?: AbortSignal) => Promise<AiTransportResult>;
@@ -152,6 +159,8 @@ function failureFrom(result: AiTransportResult): AiReaderError {
   if (status === 0) {
     if (result.failure === "signed_out") return new AiReaderError("signed_out", "You are signed out. Sign in again to use the AI reader.", false);
     if (result.failure === "timeout") return new AiReaderError("timeout", "The AI reader took too long to answer. Try again.", true);
+    // The cause is a guess, so asking again stays possible: it works as soon as the function is deployed.
+    if (result.failure === "no_answer") return new AiReaderError("not_deployed", NO_ANSWER_MESSAGE, true);
     return new AiReaderError("offline", "The AI reader could not be reached. Check your connection and try again.", true);
   }
   // The function's own errors carry a message written for the user.

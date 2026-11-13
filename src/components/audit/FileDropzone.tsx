@@ -73,7 +73,12 @@ export function FileDropzone({ accept, title, buttonLabel, hint, icon, onFile, o
   function onPick(e: ChangeEvent<HTMLInputElement>): void {
     const file = e.target.files?.[0];
     e.target.value = ""; // so choosing the same file again still fires a change
-    if (file) onFile(file);
+    if (!file) return;
+    if (blocked) {
+      onReject?.(blocked);
+      return;
+    }
+    onFile(file);
   }
 
   return (

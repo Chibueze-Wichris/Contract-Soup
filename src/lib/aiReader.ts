@@ -1,4 +1,4 @@
-import type { AiTransport, AiTransportResult } from "@/analyzer";
+import { NO_ANSWER_MESSAGE, type AiTransport, type AiTransportResult } from "@/analyzer";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { readErrorResponse, readStatusResponse, type AiRequestBody } from "../../supabase/functions/_shared/wire.ts";
 
@@ -18,6 +18,28 @@ export const AI_FUNCTION_NAME = "extract-contract-terms";
 /** A little longer than the 150 seconds after which Supabase gives up on a function, so its answer is the one seen. */
 const REQUEST_TIMEOUT_MS = 165_000;
 
+/**
+ * After a request ended with no answer at all: does anything answer at the function's address?
+ *
+ * A browser hides an answer that lacks the cross-origin headers, and Supabase's answer for a
+ * function that does not exist has none. To the request below, "not deployed" therefore looks the
+ * same as "no connection". This asks once more in the one way that needs no such headers. The
+ * reply cannot be read, only whether one came. It carries no session, no key and no contract text.
+ */
+async function somethingAnswers(url: string): Promise<boolean> {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return false;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 8_000);
+  try {
+    await fetch(url, { method: "GET", mode: "no-cors", cache: "no-store", credentials: "omit", signal: controller.signal });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 async function post(body: AiRequestBody, signal?: AbortSignal, timeoutMs = REQUEST_TIMEOUT_MS): Promise<AiTransportResult> {
   const base = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.replace(/\/+$/, "");
   const publishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined;
@@ -36,8 +58,9 @@ async function post(body: AiRequestBody, signal?: AbortSignal, timeoutMs = REQUE
   }, timeoutMs);
   const cancel = (): void => controller.abort();
   signal?.addEventListener("abort", cancel);
+  const url = `${base}/functions/v1/${AI_FUNCTION_NAME}`;
   try {
-    const res = await fetch(`${base}/functions/v1/${AI_FUNCTION_NAME}`, {
+    const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, apikey: publishableKey },
       body: JSON.stringify(body),
@@ -47,7 +70,8 @@ async function post(body: AiRequestBody, signal?: AbortSignal, timeoutMs = REQUE
     return { status: res.status, body: json };
   } catch (err) {
     if (signal?.aborted) throw err; // cancelled by the user: the caller knows
-    return { status: 0, body: null, failure: timedOut ? "timeout" : "offline" };
+    if (timedOut) return { status: 0, body: null, failure: "timeout" };
+    return { status: 0, body: null, failure: (await somethingAnswers(url)) ? "no_answer" : "offline" };
   } finally {
     window.clearTimeout(timer);
     signal?.removeEventListener("abort", cancel);
@@ -78,6 +102,7 @@ export async function checkAiReader(): Promise<AiReaderCheck> {
   if (result.status === 0) {
     if (result.failure === "signed_out") return { ok: false, message: "You are signed out. Sign in again, then check the AI reader." };
     if (result.failure === "timeout") return { ok: false, message: "The AI reader took too long to answer. Try again." };
+    if (result.failure === "no_answer") return { ok: false, message: `${NO_ANSWER_MESSAGE} Deploy it, then check again.` };
     return { ok: false, message: "The AI reader could not be reached. Check your connection and try again." };
   }
   const own = readErrorResponse(result.body);

@@ -445,6 +445,8 @@ export const useDraftAuditStore = create<DraftAuditState>()((set, get) => ({
   retryAiReading: async () => {
     const held = heldReading;
     if (!held || get().contract.aiFailure === null || get().run.status === "running") return;
+    // The agreement can have been withdrawn since the failure, by unticking the box or choosing the other reader.
+    if (chosenReader(get()) !== "gemini") return;
     const job = ++contractJob;
     await readTerms(job, held.pages, { ...held.reading, reader: "gemini" }, held.after, held.gemini);
   },
@@ -462,7 +464,8 @@ export const useDraftAuditStore = create<DraftAuditState>()((set, get) => ({
     if (get().contract.status !== "reading") return;
     contractJob += 1;
     dropContractMemory();
-    set({ contract: EMPTY_CONTRACT });
+    // Stopping a reading also withdraws the agreement to send, so the next file is not sent on the strength of it.
+    set({ contract: EMPTY_CONTRACT, aiConsent: false });
   },
 
   removeContract: () => {

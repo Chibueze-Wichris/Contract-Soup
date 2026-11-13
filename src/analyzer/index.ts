@@ -4,7 +4,7 @@ import type { Analyzer } from "./types";
 
 export type { Analyzer, Audit, ClaimRow, ContractTerm, Finding, NoticePeriod, PageText, Settings } from "./types";
 export { DEFAULT_SETTINGS } from "./types";
-export { AiReaderError, GEMINI_ANALYZER_VERSION, GeminiAnalyzer } from "./gemini";
+export { AiReaderError, GEMINI_ANALYZER_VERSION, GeminiAnalyzer, NO_ANSWER_MESSAGE } from "./gemini";
 export type { AiProgress, AiReadOptions, AiReadReport, AiTransport, AiTransportResult } from "./gemini";
 
 let cached: Analyzer | null = null;
