@@ -1,5 +1,6 @@
-import type { ContractTerm } from "@/analyzer";
+import type { AiReadReport, ContractTerm } from "@/analyzer";
 import { categoryLabel } from "@/analyzer/categories";
+import { plural } from "@/lib/format";
 
 /**
  * Helpers for editing contract terms in the New Audit wizard.
@@ -129,4 +130,43 @@ export function nextManualTermId(terms: readonly ContractTerm[]): string {
     if (m) n = Math.max(n, Number(m[1]) + 1);
   }
   return `${MANUAL_PREFIX}${n}`;
+}
+
+/** "page 7", "pages 7 and 9", "pages 7, 9 and 12", or "pages 7, 9, 12 and 4 more". */
+export function pageList(pages: readonly number[]): string {
+  const sorted = [...new Set(pages)].sort((a, b) => a - b);
+  if (sorted.length === 0) return "";
+  if (sorted.length === 1) return `page ${sorted[0]}`;
+  const shown = sorted.slice(0, 6);
+  const more = sorted.length - shown.length;
+  if (more > 0) return `pages ${shown.join(", ")} and ${more} more`;
+  return `pages ${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}`;
+}
+
+export interface ReadingNotes {
+  /** What Gemini proposed that was not kept, and why. Null when everything was kept. */
+  leftOut: string | null;
+  /** Where the reading may be missing terms, and what to do about it. Null when nowhere. */
+  incomplete: { title: string; text: string } | null;
+}
+
+/** What a person should know about a Gemini reading besides its terms. Sentences, ready to show. */
+export function readingNotes(report: AiReadReport): ReadingNotes {
+  const dropped = report.termsLeftOut + report.observationsLeftOut;
+  const one = dropped === 1;
+  const pages = report.pagesAtLimit;
+  const onePage = new Set(pages).size === 1;
+  return {
+    leftOut:
+      dropped > 0
+        ? `${plural(dropped, "item")} Gemini proposed ${one ? "was" : "were"} left out, because ${one ? "it" : "they"} failed an automatic check, such as the wording quoted for ${one ? "it" : "them"} not being found in the contract.`
+        : null,
+    incomplete:
+      pages.length > 0
+        ? {
+            title: onePage ? `${pageList(pages).replace(/^p/, "P")} may hold more terms` : "Some pages may hold more terms",
+            text: `On ${pageList(pages)}, Gemini reached the most terms it reports for a single page, so ${onePage ? "that page" : "those pages"} may hold terms that are not listed here. Compare ${onePage ? "it" : "them"} with the contract and add what is missing with Add a term.`,
+          }
+        : null,
+  };
 }

@@ -20,7 +20,7 @@ import { geminiModel, geminiName, usedGemini } from "../src/lib/analyzerText";
 import { buildBackup, fromRow, parseAudit, parseBackup, toRecord, toRow } from "../src/lib/auditRecord";
 import { NO_FILTER, awaitsReview, countBySource, filterFindings, impactText, isAiFinding } from "../src/lib/findings";
 import { aiDisclosure, buildReportPdf } from "../src/lib/reportPdf";
-import { describeIsoDate, describeNoticePeriod, termNotes } from "../src/lib/terms";
+import { describeIsoDate, describeNoticePeriod, pageList, readingNotes, termNotes } from "../src/lib/terms";
 import { makeWire } from "./helpers/client";
 import { readExtractResponse } from "../supabase/functions/_shared/wire.ts";
 
@@ -260,6 +260,30 @@ function pdfWords(audit: Audit): string {
   const shown = [...raw.matchAll(/\(((?:\\.|[^\\()])*)\)\s*Tj/g)].map((m) => m[1].replace(/\\([()\\])/g, "$1"));
   return shown.join(" ").replace(/\s+/g, " ");
 }
+
+test("the notes on a reading say what was left out and which pages may be incomplete, and nothing when there is nothing to say", () => {
+  const clean = { model: "gemini-3.8-flash", termsLeftOut: 0, observationsLeftOut: 0, observations: 0, pagesCorrected: 0, pagesAtLimit: [], requests: 1 };
+  assert.deepEqual(readingNotes(clean), { leftOut: null, incomplete: null });
+
+  const one = readingNotes({ ...clean, termsLeftOut: 1 });
+  assert.match(one.leftOut ?? "", /^1 item Gemini proposed was left out, because it failed an automatic check/);
+  const several = readingNotes({ ...clean, termsLeftOut: 2, observationsLeftOut: 1 });
+  assert.match(several.leftOut ?? "", /^3 items Gemini proposed were left out, because they failed an automatic check/);
+
+  const onePage = readingNotes({ ...clean, pagesAtLimit: [7] }).incomplete;
+  assert.equal(onePage?.title, "Page 7 may hold more terms");
+  assert.match(onePage?.text ?? "", /^On page 7, Gemini reached the most terms it reports for a single page, so that page may hold terms that are not listed here/);
+  assert.match(onePage?.text ?? "", /Add a term/);
+  const morePages = readingNotes({ ...clean, pagesAtLimit: [9, 7] }).incomplete;
+  assert.equal(morePages?.title, "Some pages may hold more terms");
+  assert.match(morePages?.text ?? "", /^On pages 7 and 9, .* those pages may hold/);
+
+  assert.equal(pageList([]), "");
+  assert.equal(pageList([3]), "page 3");
+  assert.equal(pageList([12, 3, 3]), "pages 3 and 12");
+  assert.equal(pageList([1, 2, 3]), "pages 1, 2 and 3");
+  assert.equal(pageList([1, 2, 3, 4, 5, 6, 7, 8]), "pages 1, 2, 3, 4, 5, 6 and 2 more");
+});
 
 test("the PDF of an audit read by Gemini says so, and prints no amount for an observation", async () => {
   const audit = await geminiAudit();

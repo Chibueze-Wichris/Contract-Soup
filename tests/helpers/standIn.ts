@@ -43,6 +43,8 @@ export interface StandIn {
   geminiHeaders: Headers[];
   /** The rows of the `audits` table. */
   rows: Record<string, unknown>[];
+  /** When set, what Gemini answers for a request holding these pages, in place of the reading of the sample agreement. */
+  answer: ((pages: number[]) => unknown) | null;
   /** Forgets the requests seen so far. */
   forget(): void;
   close(): Promise<void>;
@@ -90,6 +92,7 @@ export async function startStandIn(): Promise<StandIn> {
     toGemini: [],
     geminiHeaders: [],
     rows: [],
+    answer: null,
     forget() {
       this.toFunction.length = 0;
       this.toGemini.length = 0;
@@ -117,7 +120,8 @@ export async function startStandIn(): Promise<StandIn> {
       if (standIn.mode === "slow") await new Promise((resolve) => setTimeout(resolve, 2_500));
       const sent = String((JSON.parse(body) as { input?: unknown }).input ?? "");
       const pages = [...sent.matchAll(/<<<BEGIN PAGE (\d+) /g)].map((m) => Number(m[1]));
-      return Response.json(interaction(pages.length > 0 ? JSON.stringify(sampleModelAnswerFor(pages)) : "ready"));
+      if (pages.length === 0) return Response.json(interaction("ready"));
+      return Response.json(interaction(JSON.stringify(standIn.answer ? standIn.answer(pages) : sampleModelAnswerFor(pages))));
     },
     log: () => undefined,
     sleep: async () => undefined,

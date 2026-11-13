@@ -213,6 +213,8 @@ export function interpretModelOutput(data: unknown, pages: readonly PageInput[],
     rejected[reason] = (rejected[reason] ?? 0) + 1;
   };
   let pagesCorrected = 0;
+  let termsOverLimit = 0;
+  let risksOverLimit = 0;
 
   // ---- Provisions ----
   const terms: AiTerm[] = [];
@@ -227,6 +229,7 @@ export function interpretModelOutput(data: unknown, pages: readonly PageInput[],
     }
     if (terms.length >= limits.maxTerms) {
       reject("over_limit");
+      termsOverLimit += 1;
       continue;
     }
     const category = item.category;
@@ -362,6 +365,7 @@ export function interpretModelOutput(data: unknown, pages: readonly PageInput[],
     }
     if (risks.length >= limits.maxRisks) {
       reject("over_limit");
+      risksOverLimit += 1;
       continue;
     }
     const title = tidy(item.title, TITLE_MAX);
@@ -425,6 +429,11 @@ export function interpretModelOutput(data: unknown, pages: readonly PageInput[],
       risksAccepted: risks.length,
       rejected,
       pagesCorrected,
+      termsOverLimit,
+      risksOverLimit,
+      // The model is told to stop at the limit and to put the most material first. An answer that
+      // reaches the limit may therefore not hold everything on these pages, and the caller is told.
+      termLimitReached: data.provisions.length >= limits.maxTerms,
     },
   };
 }

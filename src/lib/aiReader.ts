@@ -102,7 +102,7 @@ export async function checkAiReader(): Promise<AiReaderCheck> {
   if (result.status === 0) {
     if (result.failure === "signed_out") return { ok: false, message: "You are signed out. Sign in again, then check the AI reader." };
     if (result.failure === "timeout") return { ok: false, message: "The AI reader took too long to answer. Try again." };
-    if (result.failure === "no_answer") return { ok: false, message: `${NO_ANSWER_MESSAGE} Deploy it, then check again.` };
+    if (result.failure === "no_answer") return { ok: false, message: NO_ANSWER_MESSAGE };
     return { ok: false, message: "The AI reader could not be reached. Check your connection and try again." };
   }
   const own = readErrorResponse(result.body);

@@ -47,9 +47,13 @@ export interface AiTransportResult {
   failure?: "offline" | "timeout" | "signed_out" | "no_answer";
 }
 
-/** Said in the audit and in Settings when the project answers but the function's answer cannot be read. */
+/**
+ * Said in the audit and in Settings when the project answers but the function's answer cannot be
+ * read. A browser hides an answer that lacks cross-origin headers, which is what the platform
+ * sends for a function that does not exist, and may send when it turns a request away itself.
+ */
 export const NO_ANSWER_MESSAGE =
-  "The AI reader gave no answer that could be read. Your Supabase project itself can be reached, so the extract-contract-terms function has most likely not been deployed on it yet, or it failed to start.";
+  "The AI reader gave no answer that could be read, although your Supabase project can be reached. Most likely the extract-contract-terms function has not been deployed to it yet. If it has, sign out, sign in again and try once more.";
 
 /** Sends one request to the Edge Function. Passed in, so this file has no dependency on Supabase and can be tested without a network. */
 export type AiTransport = (body: ExtractRequestBody, signal?: AbortSignal) => Promise<AiTransportResult>;
@@ -105,6 +109,13 @@ export interface AiReadReport {
   observations: number;
   /** Quotations that were on a different page from the one Gemini named, and were put right. */
   pagesCorrected: number;
+  /**
+   * Pages for which Gemini reported as many terms as one answer may hold, even when asked about
+   * that page alone. Such a page may hold more terms than were reported.
+   */
+  pagesAtLimit: number[];
+  /** How many requests the reading took. More than the contract's size suggests when dense pages were asked about again. */
+  requests: number;
 }
 
 interface HeldObservation {
@@ -125,6 +136,35 @@ interface BatchResult {
   termsLeftOut: number;
   observationsLeftOut: number;
   pagesCorrected: number;
+  /** Gemini reported as many terms as one answer may hold, so these pages may hold more. */
+  atTermLimit: boolean;
+  /** The page numbers the request held. */
+  pages: number[];
+}
+
+/** What is known about one request's pages: its checked answer, or that they must be asked about in two halves. */
+type Held = BatchResult | "split";
+
+/**
+ * Whether a failed request would succeed if it held fewer pages.
+ *   "size"  the answer was cut off because it grew too long: asking again for the same pages cannot work
+ *   "time"  no answer came in time: fewer pages take less time, but Gemini may also just be slow today
+ */
+function helpedByFewerPages(result: AiTransportResult): "size" | "time" | null {
+  if (result.status === 0) return result.failure === "timeout" ? "time" : null;
+  const own = readErrorResponse(result.body);
+  if (own) return own.code === "model_output_incomplete" ? "size" : own.code === "upstream_timeout" ? "time" : null;
+  return result.status === 504 || result.status === 546 ? "time" : null;
+}
+
+/** A short, stable mark of a page's text, so that a changed page is never mistaken for one already read. */
+function textMark(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return `${text.length}.${(h >>> 0).toString(36)}`;
 }
 
 /** Splits the pages that have text into requests the server will accept. Blank pages are not sent. */
@@ -209,9 +249,13 @@ export const MAX_AI_TERMS = 4_000;
 export const MAX_AI_OBSERVATIONS = 2_000;
 
 export class GeminiAnalyzer implements Analyzer {
-  /** Finished batches, by position, so that trying again after a failure does not read the same pages twice. */
-  private readonly done = new Map<number, BatchResult>();
-  /** The pages the finished batches belong to. A different document starts from nothing. */
+  /**
+   * What has been learned so far, by the page numbers of each request. Trying again after a
+   * failure then asks only for what is still missing, and does not repeat a request that is
+   * already known to hold too much.
+   */
+  private readonly done = new Map<string, Held>();
+  /** The pages the held answers belong to. A different document starts from nothing. */
   private fingerprint = "";
   private observations: HeldObservation[] = [];
   private lastReport: AiReadReport | null = null;
@@ -231,7 +275,7 @@ export class GeminiAnalyzer implements Analyzer {
 
   async extractTerms(pages: PageText[], options: AiReadOptions = {}): Promise<ContractTerm[]> {
     const batches = splitIntoBatches(pages);
-    const fingerprint = batches.map((b) => b.map((p) => `${p.page}:${p.text.length}`).join(",")).join("|");
+    const fingerprint = batches.map((b) => b.map((p) => `${p.page}:${textMark(p.text)}`).join(",")).join("|");
     if (fingerprint !== this.fingerprint) {
       this.done.clear();
       this.fingerprint = fingerprint;
@@ -241,31 +285,67 @@ export class GeminiAnalyzer implements Analyzer {
 
     const pagesTotal = batches.reduce((n, b) => n + b.length, 0);
     let pagesDone = 0;
+    let requests = 0;
     options.onProgress?.({ pagesDone, pagesTotal });
 
-    for (let i = 0; i < batches.length; i += 1) {
-      const batch = batches[i];
-      if (!this.done.has(i)) {
-        if (options.signal?.aborted) throw new AiReaderError("cancelled", "Reading was cancelled.", true);
+    const cancelled = (): AiReaderError => new AiReaderError("cancelled", "Reading was cancelled.", true);
+
+    /**
+     * Reads these pages, in as many requests as it takes.
+     *
+     * One answer holds a limited number of terms and must arrive within a time limit. When a
+     * request turns out to hold more than that allows, its pages are asked about again in two
+     * halves, so a dense contract is read in full instead of losing its less prominent terms.
+     *
+     * `halvedForTime` says these pages are already half of a request that got no answer in time.
+     * If they get none either, the cause is more likely Gemini than the pages, and the reading
+     * stops there. Each time the person asks again, one more halving is allowed.
+     */
+    const read = async (batch: PageText[], halvedForTime: boolean): Promise<BatchResult[]> => {
+      const key = batch.map((p) => p.page).join(",");
+      let held = this.done.get(key);
+      let forTime = halvedForTime;
+
+      if (held === undefined) {
+        if (options.signal?.aborted) throw cancelled();
         // PRIVACY: this is everything that leaves the device. Page numbers and page text, nothing else.
         const request: ExtractRequestBody = { task: "extract", pages: batch, documentPages: pages.length };
         let result: AiTransportResult;
+        requests += 1;
         try {
           result = await this.transport(request, options.signal);
         } catch {
-          if (options.signal?.aborted) throw new AiReaderError("cancelled", "Reading was cancelled.", true);
+          if (options.signal?.aborted) throw cancelled();
           throw new AiReaderError("offline", "The AI reader could not be reached. Check your connection and try again.", true);
         }
-        if (options.signal?.aborted) throw new AiReaderError("cancelled", "Reading was cancelled.", true);
-        if (result.status !== 200) throw failureFrom(result);
-        this.done.set(i, readBatch(result.body, batch));
+        if (options.signal?.aborted) throw cancelled();
+
+        if (result.status === 200) {
+          const answer = readBatch(result.body, batch);
+          // At the limit with several pages: what was left unreported cannot be known, so the answer is not used.
+          held = answer.atTermLimit && batch.length > 1 ? "split" : answer;
+        } else {
+          const why = batch.length > 1 ? helpedByFewerPages(result) : null;
+          if (why === null || (why === "time" && halvedForTime)) throw failureFrom(result);
+          held = "split";
+          forTime = why === "time";
+        }
+        this.done.set(key, held);
+      }
+
+      if (held === "split") {
+        const middle = Math.ceil(batch.length / 2);
+        return [...(await read(batch.slice(0, middle), forTime)), ...(await read(batch.slice(middle), forTime))];
       }
       pagesDone += batch.length;
       options.onProgress?.({ pagesDone, pagesTotal });
-    }
+      return [held];
+    };
 
-    // Put the batches together. Ids are given here, in page order, so they are the same on every run.
-    const results = batches.map((_, i) => this.done.get(i) as BatchResult);
+    const results: BatchResult[] = [];
+    for (const batch of batches) results.push(...(await read(batch, false)));
+
+    // Put the answers together. Ids are given here, in page order, so they are the same on every run.
     const terms: ContractTerm[] = [];
     const observations: HeldObservation[] = [];
     results.forEach((result, batchIndex) => {
@@ -304,6 +384,9 @@ export class GeminiAnalyzer implements Analyzer {
       observationsLeftOut: results.reduce((n, r) => n + r.observationsLeftOut, 0),
       observations: this.observations.length,
       pagesCorrected: results.reduce((n, r) => n + r.pagesCorrected, 0),
+      // Only single pages can be left here: a request of several pages at the limit is always asked again in halves.
+      pagesAtLimit: results.filter((r) => r.atTermLimit).flatMap((r) => r.pages),
+      requests,
     };
     return finished;
   }
@@ -443,8 +526,12 @@ function readBatch(body: unknown, pages: readonly PageText[]): BatchResult {
     model: answer.model,
     terms,
     observations,
-    termsLeftOut: Math.max(0, stats.termsProposed - stats.termsAccepted) + unverified,
-    observationsLeftOut: Math.max(0, stats.risksProposed - stats.risksAccepted) + unverifiedObservations,
+    // Left out means "failed a check". A repeat of a term already reported, or an item beyond the most one
+    // answer may hold, is not that: the first is no loss, and the second is reported through atTermLimit.
+    termsLeftOut: Math.max(0, stats.termsProposed - stats.termsAccepted - (stats.rejected.duplicate ?? 0) - stats.termsOverLimit) + unverified,
+    observationsLeftOut: Math.max(0, stats.risksProposed - stats.risksAccepted - stats.risksOverLimit) + unverifiedObservations,
     pagesCorrected: stats.pagesCorrected,
+    atTermLimit: stats.termLimitReached,
+    pages: pages.map((p) => p.page),
   };
 }

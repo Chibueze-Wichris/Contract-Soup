@@ -75,8 +75,9 @@ export function ReaderChoice() {
             </li>
             <li>Your claims file is never sent. The money checks are worked out on this device, as always.</li>
             <li>
-              Each request tells Gemini not to store the text. Google&rsquo;s own terms for the Gemini API still decide how
-              Google handles what it is sent.
+              Each request tells Gemini not to store the text. Google&rsquo;s terms for the Gemini API decide the rest: with
+              a key on Google&rsquo;s paid plan the text is not used to improve Google&rsquo;s products, and with a key on its
+              free plan it may be, and may be read by reviewers. Whoever set up this app chose the key.
             </li>
             <li>Every term Gemini finds arrives unconfirmed, with the contract wording it rests on, for you to check.</li>
           </ul>

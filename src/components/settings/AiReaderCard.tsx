@@ -35,8 +35,17 @@ export function AiReaderCard() {
         </li>
         <li>The Gemini key is kept in the Supabase project&rsquo;s secrets. It is not part of this app and cannot be read here.</li>
         <li>
-          The function keeps no copy of the text, and each request tells Gemini not to store it. Google&rsquo;s own terms for
-          the Gemini API still decide how Google handles what it is sent.
+          The function keeps no copy of the text, and each request tells Gemini not to store it. Google&rsquo;s{" "}
+          <a
+            href="https://ai.google.dev/gemini-api/terms"
+            target="_blank"
+            rel="noreferrer"
+            className="font-medium text-brand underline underline-offset-2 hover:no-underline"
+          >
+            terms for the Gemini API
+          </a>{" "}
+          decide the rest. For real contracts, use a key from a Google project with billing turned on: under those terms,
+          text sent with a key on the free plan may be used to improve Google&rsquo;s products and read by reviewers.
         </li>
         <li>The money checks always run on this device, on terms a person has confirmed.</li>
       </ul>

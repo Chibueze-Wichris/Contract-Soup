@@ -6,7 +6,7 @@
 
 type Item = Record<string, unknown>;
 
-const provision = (fields: Item): Item => ({
+export const provision = (fields: Item): Item => ({
   value_number: null,
   value_text: null,
   unit: "none",

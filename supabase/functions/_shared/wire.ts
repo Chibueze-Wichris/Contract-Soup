@@ -79,6 +79,14 @@ export interface AiStats {
   rejected: Record<string, number>;
   /** Quotations that were found on a different page from the one the model named. */
   pagesCorrected: number;
+  /** Items the model sent beyond the most that is kept from one answer. They are counted in `rejected` too. */
+  termsOverLimit: number;
+  risksOverLimit: number;
+  /**
+   * True when the model reported as many provisions as one answer may hold. The pages may then
+   * hold more than was reported, and the caller should ask again with fewer pages.
+   */
+  termLimitReached: boolean;
 }
 
 export interface ExtractResponseBody {
@@ -258,6 +266,9 @@ export function readExtractResponse(body: unknown): ExtractResponseBody | null {
       risksAccepted: count(stats.risksAccepted),
       rejected: readCounts(stats.rejected),
       pagesCorrected: count(stats.pagesCorrected),
+      termsOverLimit: count(stats.termsOverLimit),
+      risksOverLimit: count(stats.risksOverLimit),
+      termLimitReached: stats.termLimitReached === true,
     },
   };
 }

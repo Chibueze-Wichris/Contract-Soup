@@ -8,6 +8,7 @@ import { Button, Modal, Notice, ProgressBar } from "@/components/ui";
 import { AI_READER_AVAILABLE } from "@/lib/aiReader";
 import { formatBytes, plural } from "@/lib/format";
 import { MAX_PDF_BYTES, MAX_PDF_PAGES } from "@/lib/pdf";
+import { readingNotes } from "@/lib/terms";
 import { useDraftAuditStore, type ContractState } from "@/store/useDraftAuditStore";
 
 /** What is happening while a contract is being read, in words. */
@@ -49,6 +50,7 @@ export function UploadStep({ focusHeading }: { focusHeading: boolean }) {
   const pagesKnown = (contract.stage === "pages" || (contract.stage === "ai" && contract.pagesDone > 0)) && contract.pagesTotal > 0;
   const blocked = waitingForConsent ? "Tick the box below to agree to send this contract's text to Google Gemini, or choose the built-in reader." : undefined;
   const report = contract.aiReport;
+  const notes = report ? readingNotes(report) : null;
 
   return (
     <StepShell
@@ -204,14 +206,12 @@ export function UploadStep({ focusHeading }: { focusHeading: boolean }) {
                   ? ` ${plural(report.observations, "observation")} about the wording will be added to the report, marked as AI reading.`
                   : ""}
               </p>
-              {report.termsLeftOut + report.observationsLeftOut > 0 ? (
-                <p className="mt-1">
-                  {plural(report.termsLeftOut + report.observationsLeftOut, "item")} Gemini proposed{" "}
-                  {report.termsLeftOut + report.observationsLeftOut === 1 ? "was" : "were"} left out, because the wording
-                  quoted for {report.termsLeftOut + report.observationsLeftOut === 1 ? "it" : "them"} could not be found in the
-                  contract.
-                </p>
-              ) : null}
+              {notes?.leftOut ? <p className="mt-1">{notes.leftOut}</p> : null}
+            </Notice>
+          ) : null}
+          {withGemini && notes?.incomplete ? (
+            <Notice tone="warning" className="mt-4" title={notes.incomplete.title}>
+              {notes.incomplete.text}
             </Notice>
           ) : null}
         </>

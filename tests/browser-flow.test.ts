@@ -21,7 +21,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
-import { chooseFile, clickButton, launchBrowser, pageText, pause, termRows, waitForText, whyNoBrowser, writeSampleFiles, type Browser, type Page } from "./helpers/browser";
+import { DEFAULT_LIMITS } from "../supabase/functions/_shared/limits.ts";
+import { chooseFile, clickButton, launchBrowser, pageText, pause, shot, termRows, waitForText, whyNoBrowser, writePdf, writeSampleFiles, type Browser, type Page } from "./helpers/browser";
+import { feeSchedule } from "./helpers/client";
 import { STAND_IN_PUBLISHABLE_KEY, STAND_IN_USER, serveFolder, startStandIn, type StandIn, type StandInMode } from "./helpers/standIn";
 import { TEST_KEY } from "./helpers/stubs";
 
@@ -118,6 +120,7 @@ test("the built-in reader is the default, and with Gemini chosen nothing is read
   const text = await pageText(page);
   assert.match(text, /text of the contract.s pages goes to Google Gemini/);
   assert.match(text, /claims file is never sent/);
+  await shot(page, "1-choose-the-reader");
 
   await clickButton(page, "Try the sample");
   await pause(600);
@@ -160,6 +163,7 @@ test("Gemini reads an uploaded PDF: only page text is sent, and every term waits
   assert.ok(rows.every((row) => row.text.includes("Read by Gemini")));
   const flagged = rows.filter((row) => row.text.includes("Needs review"));
   assert.ok(flagged.length >= 2, "terms that failed a check are marked");
+  await shot(page, "2-review-the-terms");
 
   // Confirming the clear ones in one go leaves the marked ones for a person.
   await clickButton(page, "Confirm all high confidence", "starting");
@@ -178,7 +182,36 @@ test("Gemini reads an uploaded PDF: only page text is sent, and every term waits
   assert.match(panel, /The figure 25 was not found in the quoted wording/);
   assert.match(panel, /within twenty \(20\) days after the end of each month/);
   assert.match(panel, /Checked: this wording is on page 9 of the PDF/);
+  await shot(page, "3-a-term-that-needs-review");
   await page.keyboard.press("Escape");
+});
+
+test("a dense contract is asked about in smaller parts until it is read in full, and a page that may still be incomplete is named", options, async () => {
+  // Page 1 states 3 fees and page 2 states 100. One answer holds 80.
+  const schedule = feeSchedule(2, (number) => (number === 2 ? 100 : 3));
+  const pdf = writePdf(path.join(folder, "Fee-schedule.pdf"), schedule.pages);
+  await freshAudit("answer");
+  project.answer = (pages) => schedule.answerFor(pages, { obeysLimit: DEFAULT_LIMITS.maxTerms });
+  try {
+    await chooseGemini(true);
+    await chooseFile(page, pdf);
+    assert.ok(await waitForText(page, "terms confirmed"), "the review step opens");
+    await pause(300);
+
+    // Both pages together reached the limit, so each was asked about again by itself.
+    assert.deepEqual(
+      project.toFunction.map((body) => (JSON.parse(body) as { pages: { page: number }[] }).pages.map((p) => p.page)),
+      [[1, 2], [1], [2]],
+    );
+    const text = await pageText(page);
+    assert.match(text, new RegExp(`0 of ${3 + DEFAULT_LIMITS.maxTerms} terms confirmed`), "all of page 1, and as much of page 2 as one answer holds");
+    assert.match(text, /Page 2 may hold more terms/);
+    assert.match(text, /On page 2, Gemini reached the most terms it reports for a single page/);
+    assert.match(text, /add what is missing with Add a term/);
+    await shot(page, "4-a-page-that-may-hold-more");
+  } finally {
+    project.answer = null;
+  }
 });
 
 test("when Gemini fails the audit stops, and asking again needs the agreement to still stand", options, async () => {
@@ -196,6 +229,7 @@ test("when Gemini fails the audit stops, and asking again needs the agreement to
   assert.doesNotMatch(text, /terms found|terms confirmed/, "the built-in reader did not step in");
   assert.equal(project.toFunction.length, 1, "the app asked once");
   assert.equal(project.toGemini.length, 2, "the function did the retrying");
+  await shot(page, "5-gemini-could-not-read");
 
   // Gemini recovers, but the person has unticked the box in the meantime.
   project.mode = "answer";
@@ -244,7 +278,7 @@ test("a function that is not deployed, and a function with no key, are each name
   await chooseFile(page, files.pdf);
   assert.ok(await waitForText(page, "Gemini could not read Harborview-upload.pdf"));
   // The platform's "not found" has no cross-origin headers, so the browser hides it. The app works out the likely cause.
-  assert.match(await pageText(page), /extract-contract-terms function has most likely not been deployed/);
+  assert.match(await pageText(page), /Most likely the extract-contract-terms function has not been deployed/);
 
   await freshAudit("no-key");
   await chooseGemini(true);
@@ -292,6 +326,7 @@ test("a whole audit from uploaded files: the same money result, nothing sent whi
   const runStep = await pageText(page);
   assert.match(runStep, /Read by Google Gemini \(gemini-3\.8-flash\)/);
   assert.match(runStep, /Nothing more is sent to Gemini/);
+  await shot(page, "6-before-the-run");
 
   const sentBeforeRun = sentAnything();
   await clickButton(page, "Run audit");
@@ -308,6 +343,8 @@ test("a whole audit from uploaded files: the same money result, nothing sent whi
   assert.match(report, /From 6 findings of the money checks/);
   assert.match(report, /4 observations from Gemini.s reading have no estimate and add nothing here/);
   assert.match(report, /No estimate/);
+  await pause(1_200); // the chart is loaded after the rest
+  await shot(page, "7-the-report");
 
   // An observation explains itself and shows the wording it was checked against.
   await page.evaluate(() => [...document.querySelectorAll<HTMLElement>("li button")].find((b) => b.innerText.includes("AI reading"))?.click());
@@ -316,6 +353,7 @@ test("a whole audit from uploaded files: the same money result, nothing sent whi
   assert.match(finding, /An observation from Gemini/);
   assert.match(finding, /no dollar estimate/);
   assert.match(finding, /Checked: each quotation is on the stated page of the contract/);
+  await shot(page, "8-an-observation");
   await page.keyboard.press("Escape");
   await pause(300);
 
@@ -354,6 +392,7 @@ test("Settings can check the reader, and sends no contract text to do it", optio
 
   await clickButton(page, "Check AI reader");
   assert.ok(await waitForText(page, "Ready. The function reached Gemini and will use the model gemini-3.8-flash"));
+  await shot(page, "9-settings-check");
   assert.deepEqual(project.toFunction.map((body) => JSON.parse(body) as unknown), [{ task: "status" }]);
   assert.doesNotMatch(project.toGemini.join("\n"), /Harborview|Administrator/, "no contract text is involved");
 
@@ -363,7 +402,7 @@ test("Settings can check the reader, and sends no contract text to do it", optio
 
   project.mode = "not-deployed";
   await clickButton(page, "Check AI reader");
-  assert.ok(await waitForText(page, "has most likely not been deployed"));
+  assert.ok(await waitForText(page, "Most likely the extract-contract-terms function has not been deployed"));
 });
 
 test("the browser reported no errors of its own along the way", options, () => {

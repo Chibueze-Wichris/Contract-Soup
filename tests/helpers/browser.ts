@@ -6,7 +6,7 @@
  * types are not needed: the small part of it that is used is described below.
  */
 
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { jsPDF } from "jspdf";
@@ -27,6 +27,8 @@ export interface Page {
   click(selector: string): Promise<void>;
   type(selector: string, text: string): Promise<void>;
   keyboard: { press(key: string): Promise<void> };
+  setViewport(viewport: { width: number; height: number }): Promise<void>;
+  screenshot(options: { path: string }): Promise<unknown>;
   on(event: "console", handler: (message: { type(): string; text(): string }) => void): unknown;
   on(event: "pageerror", handler: (error: Error) => void): unknown;
   on(event: "dialog", handler: (dialog: { accept(): Promise<void> }) => void): unknown;
@@ -86,11 +88,29 @@ export async function launchBrowser(): Promise<Browser> {
     executablePath: findChrome(),
     headless: process.env.CHROME_HEADLESS_SHELL ? "shell" : true,
     args: ["--no-first-run", "--disable-extensions", ...(process.env.CHROME_ARGS ?? "").split(/\s+/).filter(Boolean)],
-    defaultViewport: { width: 1280, height: 900 },
+    defaultViewport: VIEWPORT,
   });
 }
 
 export const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+const VIEWPORT = { width: 1280, height: 900 };
+
+/**
+ * Saves a picture of the whole page when BROWSER_SHOTS names a folder, and does nothing otherwise.
+ * `BROWSER_SHOTS=shots npm test` leaves a picture of each main screen of the Gemini reader in `shots/`.
+ */
+export async function shot(page: Page, name: string): Promise<void> {
+  const folder = process.env.BROWSER_SHOTS;
+  if (!folder) return;
+  mkdirSync(folder, { recursive: true });
+  const height = await page.evaluate(() => document.documentElement.scrollHeight);
+  await page.setViewport({ width: VIEWPORT.width, height: Math.min(Math.max(VIEWPORT.height, height), 8_000) });
+  await pause(200);
+  await page.screenshot({ path: path.join(folder, `${name}.png`) });
+  await page.setViewport(VIEWPORT);
+  await pause(100);
+}
 
 /** Everything a person can read on the page, with runs of white space folded to one space. */
 export const pageText = (page: Page): Promise<string> => page.evaluate(() => document.body.innerText.replace(/\s+/g, " "));
@@ -143,26 +163,42 @@ export const termRows = (page: Page): Promise<{ text: string; confirmed: boolean
   );
 
 /**
- * Writes the sample agreement as a real, text-based PDF with one PDF page for each of its pages,
- * and the sample claims as a CSV. The app then reads them the way it reads a customer's files.
+ * Writes pages of text as a real, text-based PDF, with one PDF page for each. A page is made as
+ * tall as its text needs, so that a page of text stays one page.
  */
-export function writeSampleFiles(folder: string): { pdf: string; csv: string } {
-  const doc = new jsPDF({ unit: "pt", format: "letter" });
+export function writePdf(file: string, pages: readonly { text: string }[]): string {
+  const WIDTH = 612;
+  const MARGIN = 72;
+  const measure = new jsPDF({ unit: "pt", format: "letter" });
+  measure.setFont("helvetica", "normal");
+  measure.setFontSize(11);
+  const laidOut = pages.map((page) => page.text.split(/\n+/).map((paragraph) => measure.splitTextToSize(paragraph, WIDTH - 2 * MARGIN) as string[]));
+  const heightOf = (paragraphs: string[][]): number => Math.max(792, 2 * MARGIN + paragraphs.reduce((h, lines) => h + lines.length * 15 + 8, 0));
+
+  const doc = new jsPDF({ unit: "pt", format: [WIDTH, heightOf(laidOut[0])] });
   doc.setFont("helvetica", "normal");
   doc.setFontSize(11);
-  SAMPLE_PAGES.forEach((page, index) => {
-    if (index > 0) doc.addPage();
-    let y = 72;
-    for (const paragraph of page.text.split(/\n+/)) {
-      for (const line of doc.splitTextToSize(paragraph, 468) as string[]) {
-        doc.text(line, 72, y);
+  laidOut.forEach((paragraphs, index) => {
+    if (index > 0) doc.addPage([WIDTH, heightOf(paragraphs)]);
+    let y = MARGIN;
+    for (const lines of paragraphs) {
+      for (const line of lines) {
+        doc.text(line, MARGIN, y);
         y += 15;
       }
       y += 8;
     }
   });
-  const pdf = path.join(folder, "Harborview-upload.pdf");
-  writeFileSync(pdf, Buffer.from(doc.output("arraybuffer")));
+  writeFileSync(file, Buffer.from(doc.output("arraybuffer")));
+  return file;
+}
+
+/**
+ * Writes the sample agreement as a PDF and the sample claims as a CSV. The app then reads them
+ * the way it reads a customer's files.
+ */
+export function writeSampleFiles(folder: string): { pdf: string; csv: string } {
+  const pdf = writePdf(path.join(folder, "Harborview-upload.pdf"), SAMPLE_PAGES);
 
   const claims = generateSampleClaims() as unknown as Record<string, unknown>[];
   const columns = [...new Set(claims.flatMap((claim) => Object.keys(claim)))];

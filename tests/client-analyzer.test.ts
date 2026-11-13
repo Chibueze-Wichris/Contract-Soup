@@ -20,9 +20,9 @@ import { LOCAL_ANALYZER_VERSION, LocalHeuristicAnalyzer } from "../src/analyzer/
 import { summarizeFindings } from "../src/analyzer/summary";
 import { DEFAULT_SETTINGS, type ContractTerm, type Finding } from "../src/analyzer/types";
 import { SAMPLE_FILE_NAME, SAMPLE_PAGES, generateSampleClaims } from "../src/data/sample";
-import { isOnPage, longSample, makeWire } from "./helpers/client";
+import { feeSchedule, isOnPage, longSample, makeWire } from "./helpers/client";
 import { sampleModelAnswerFor } from "./helpers/sampleAnswer";
-import { jsonResponse } from "./helpers/stubs";
+import { interaction, jsonResponse } from "./helpers/stubs";
 
 const confirmAll = (terms: ContractTerm[]): ContractTerm[] => terms.map((t) => ({ ...t, confirmed: true }));
 const moneyOnly = (findings: Finding[]): Finding[] => findings.filter((f) => f.origin !== "ai");
@@ -350,7 +350,7 @@ const FAILURES: FailureCase[] = [
     code: "not_deployed",
     retryable: true,
     transport: async () => ({ status: 0, body: null, failure: "no_answer" }),
-    message: /most likely not been deployed/,
+    message: /Most likely the extract-contract-terms function has not been deployed/,
   },
   {
     name: "the website is not on the function's list of allowed websites",
@@ -460,6 +460,112 @@ test("trying again after a failure only asks for the pages that were not read", 
 
   const clean = await new GeminiAnalyzer(makeWire().transport).extractTerms(pages);
   assert.deepEqual(terms, clean, "the result is the same as a reading that never failed");
+});
+
+const range = (from: number, to: number): number[] => Array.from({ length: to - from + 1 }, (_, i) => from + i);
+
+for (const obeysLimit of [true, false]) {
+  test(`a dense contract is read in full: pages that hold more terms than one answer may are asked about again in halves (${obeysLimit ? "Gemini stops at the limit" : "Gemini goes past the limit"})`, async () => {
+    const schedule = feeSchedule(25, () => 7); // 175 fees, and one answer holds 80
+    const wire = makeWire({ answer: (pages) => schedule.answerFor(pages, obeysLimit ? { obeysLimit: DEFAULT_LIMITS.maxTerms } : {}) });
+    const analyzer = new GeminiAnalyzer(wire.transport);
+    const terms = await analyzer.extractTerms(schedule.pages);
+
+    assert.deepEqual(terms.map((t) => t.label), schedule.labels, "every fee on every page, once, in page order");
+    assert.ok(terms.every((t) => isOnPage(schedule.pages, t.pageRef, t.snippet)));
+    assert.deepEqual(wire.sentPages, [range(1, 25), range(1, 13), range(1, 7), range(8, 13), range(14, 25), range(14, 19), range(20, 25)]);
+
+    const report = analyzer.report;
+    assert.ok(report);
+    assert.equal(report.requests, 7);
+    assert.deepEqual(report.pagesAtLimit, [], "nothing is left that may be incomplete");
+    assert.equal(report.termsLeftOut, 0, "terms beyond the limit did not fail a check, and they were read in the end");
+  });
+}
+
+test("one page that holds more terms than one answer may: what was reported is kept, and the page is named as possibly incomplete", async () => {
+  const schedule = feeSchedule(2, (page) => (page === 2 ? 100 : 3));
+  const wire = makeWire({ answer: (pages) => schedule.answerFor(pages, { obeysLimit: DEFAULT_LIMITS.maxTerms }) });
+  const analyzer = new GeminiAnalyzer(wire.transport);
+  const terms = await analyzer.extractTerms(schedule.pages);
+
+  assert.deepEqual(wire.sentPages, [[1, 2], [1], [2]]);
+  assert.equal(terms.filter((t) => t.pageRef === 1).length, 3);
+  assert.equal(terms.filter((t) => t.pageRef === 2).length, DEFAULT_LIMITS.maxTerms);
+  assert.deepEqual(analyzer.report?.pagesAtLimit, [2]);
+});
+
+test("an answer cut short for length is asked again in halves, because asking again for the same pages cannot work", async () => {
+  const wire = makeWire({
+    answer: (pages) => (pages.length > 4 ? jsonResponse(200, interaction('{"provisions":[{"ref":"t1","pa', { status: "incomplete" })) : sampleModelAnswerFor(pages)),
+  });
+  const analyzer = new GeminiAnalyzer(wire.transport);
+  const terms = await analyzer.extractTerms(SAMPLE_PAGES);
+  assert.deepEqual(wire.sentPages, [range(1, 12), range(1, 6), range(1, 3), range(4, 6), range(7, 12), range(7, 9), range(10, 12)]);
+
+  const clean = await new GeminiAnalyzer(makeWire().transport).extractTerms(SAMPLE_PAGES);
+  assert.deepEqual(terms.map((t) => [t.label, t.pageRef, t.value]), clean.map((t) => [t.label, t.pageRef, t.value]));
+
+  // One page alone that is cut short cannot be halved. It fails, and says so.
+  const stuck = new GeminiAnalyzer(makeWire({ answer: () => jsonResponse(200, interaction("{", { status: "incomplete" })) }).transport);
+  const err = await failure(() => stuck.extractTerms(SAMPLE_PAGES.slice(0, 1)));
+  assert.equal(err.code, "bad_answer");
+  assert.match(err.message, /cut short/);
+});
+
+test("when no answer comes in time the pages are halved once, and once more each time the person asks again", async () => {
+  const wire = makeWire();
+  const asked: number[][] = [];
+  let tooSlowAbove = 6;
+  const transport: AiTransport = async (body, signal) => {
+    const pages = body.task === "extract" ? body.pages.map((p) => p.page) : [];
+    asked.push(pages);
+    if (pages.length > tooSlowAbove) return { status: 0, body: null, failure: "timeout" };
+    return wire.transport(body, signal);
+  };
+
+  // Twelve pages get no answer in time. Six do.
+  const analyzer = new GeminiAnalyzer(transport);
+  const terms = await analyzer.extractTerms(SAMPLE_PAGES);
+  assert.deepEqual(asked, [range(1, 12), range(1, 6), range(7, 12)]);
+  const clean = await new GeminiAnalyzer(makeWire().transport).extractTerms(SAMPLE_PAGES);
+  assert.deepEqual(terms.map((t) => [t.label, t.pageRef]), clean.map((t) => [t.label, t.pageRef]));
+
+  // Gemini is slower still: six pages get no answer either. The reading stops instead of halving on and on.
+  asked.length = 0;
+  tooSlowAbove = 3;
+  const slow = new GeminiAnalyzer(transport);
+  const err = await failure(() => slow.extractTerms(SAMPLE_PAGES));
+  assert.equal(err.code, "timeout");
+  assert.equal(err.retryable, true);
+  assert.deepEqual(asked, [range(1, 12), range(1, 6)], "two requests without an answer, then it stops");
+  assert.equal(slow.report, null);
+
+  // The person asks again. The twelve pages are not sent whole a second time, and one more halving is allowed.
+  asked.length = 0;
+  const again = await slow.extractTerms(SAMPLE_PAGES);
+  assert.deepEqual(asked, [range(1, 6), range(1, 3), range(4, 6), range(7, 12), range(7, 9), range(10, 12)]);
+  assert.deepEqual(again.map((t) => [t.label, t.pageRef]), clean.map((t) => [t.label, t.pageRef]));
+
+  // The same from the function itself, when Gemini does not answer it in time.
+  const viaFunction = makeWire({ answer: (pages) => (pages.length > 6 ? jsonResponse(504, { error: { code: 504, status: "DEADLINE_EXCEEDED" } }) : sampleModelAnswerFor(pages)) });
+  const third = await new GeminiAnalyzer(viaFunction.transport).extractTerms(SAMPLE_PAGES);
+  assert.deepEqual(viaFunction.sentPages, [range(1, 12), range(1, 6), range(7, 12)]);
+  assert.equal(third.length, clean.length);
+});
+
+test("a page whose text changed is read again, even when its length is the same", async () => {
+  const wire = makeWire();
+  const analyzer = new GeminiAnalyzer(wire.transport);
+  await analyzer.extractTerms(SAMPLE_PAGES);
+  await analyzer.extractTerms(SAMPLE_PAGES);
+  assert.equal(wire.sent.length, 1, "the same pages are not sent twice");
+
+  const edited = SAMPLE_PAGES.map((p) => (p.page === 4 ? { ...p, text: p.text.replace("$24.50", "$25.50") } : p));
+  assert.equal(edited[3].text.length, SAMPLE_PAGES[3].text.length);
+  const terms = await analyzer.extractTerms(edited);
+  assert.equal(wire.sent.length, 2, "the edited contract is sent");
+  assert.equal(terms.some((t) => t.label === "Administrative Fee"), false, "the old wording is no longer on the page, so the term that quoted it is gone");
 });
 
 test("a different contract starts from nothing, even on the same analyzer", async () => {

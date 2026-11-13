@@ -136,7 +136,7 @@ export function RunStep({ focusHeading }: { focusHeading: boolean }) {
               <span className="block text-muted">
                 Only the report is saved there: the contract terms with their short excerpts, the findings and the
                 totals. Your contract and claims files are not uploaded.
-                {withGemini ? " The page text that was sent to Gemini is not kept." : ""}
+                {withGemini ? " This app does not keep the page text that was sent to Gemini." : ""}
               </span>
             </>
           ) : (

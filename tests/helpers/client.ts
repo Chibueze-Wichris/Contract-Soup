@@ -7,7 +7,7 @@
 import type { AiTransport, AiTransportResult } from "../../src/analyzer/gemini";
 import type { PageText } from "../../src/analyzer/types";
 import { SAMPLE_PAGES } from "../../src/data/sample";
-import { sampleModelAnswerFor } from "./sampleAnswer";
+import { provision, sampleModelAnswerFor } from "./sampleAnswer";
 import { interaction, jsonResponse, makeWorld, request, type World, type WorldOptions } from "./stubs";
 
 export interface Wire {
@@ -78,4 +78,50 @@ export function isOnPage(pages: readonly PageText[], page: number, quote: string
   const squash = (s: string): string => s.replace(/\s+/g, " ").trim();
   const text = pages.find((p) => p.page === page)?.text ?? "";
   return squash(text).includes(squash(quote));
+}
+
+/**
+ * A fee schedule: pages that each state many separate fees, so that a request of several pages
+ * holds more terms than one answer may. `feesOn` gives the number of fees on a page.
+ *
+ * `answerFor` plays Gemini: it reports every fee on the pages it is asked about, in page order.
+ * With `obeysLimit` it stops at the most it was told to report, as the instructions ask.
+ */
+export function feeSchedule(pageCount: number, feesOn: (page: number) => number): {
+  pages: PageText[];
+  labels: string[];
+  answerFor: (pages: number[], options?: { obeysLimit?: number }) => unknown;
+} {
+  const sentence = (page: number, k: number): string =>
+    `Administrator shall charge Client a processing fee of $${(page + k / 100).toFixed(2)} per claim for service code SC-${page}-${k}.`;
+  const label = (page: number, k: number): string => `Processing fee SC-${page}-${k}`;
+  const numbers = Array.from({ length: pageCount }, (_, i) => i + 1);
+  const fees = (page: number): number[] => Array.from({ length: feesOn(page) }, (_, i) => i + 1);
+
+  return {
+    pages: numbers.map((page) => ({
+      page,
+      text: [`Schedule ${page} of the fee exhibit.`, ...fees(page).map((k) => `${page}.${k} ${sentence(page, k)}`)].join("\n"),
+    })),
+    labels: numbers.flatMap((page) => fees(page).map((k) => label(page, k))),
+    answerFor: (pages, options = {}) => {
+      const provisions = [...pages]
+        .sort((a, b) => a - b)
+        .flatMap((page) =>
+          fees(page).map((k) =>
+            provision({
+              ref: `t${page}_${k}`,
+              page,
+              quote: sentence(page, k),
+              category: "other_fees",
+              label: label(page, k),
+              value_number: Number((page + k / 100).toFixed(2)),
+              unit: "USD/claim",
+              summary: `A fee for each claim under service code SC-${page}-${k}.`,
+            }),
+          ),
+        );
+      return { provisions: options.obeysLimit ? provisions.slice(0, options.obeysLimit) : provisions, risks: [] };
+    },
+  };
 }

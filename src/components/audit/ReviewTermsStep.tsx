@@ -7,7 +7,7 @@ import { TERM_GRID, TermRow } from "./TermRow";
 import { Button, Notice } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import { plural } from "@/lib/format";
-import { awaitsReview } from "@/lib/terms";
+import { awaitsReview, readingNotes } from "@/lib/terms";
 import { useDraftAuditStore } from "@/store/useDraftAuditStore";
 
 /** Step 2: check each term against the contract wording, correct it, and confirm the ones that are right. */
@@ -15,6 +15,7 @@ export function ReviewTermsStep({ focusHeading }: { focusHeading: boolean }) {
   const terms = useDraftAuditStore((s) => s.terms);
   const sample = useDraftAuditStore((s) => s.contract.source === "sample");
   const withGemini = useDraftAuditStore((s) => s.contract.reader === "gemini");
+  const aiReport = useDraftAuditStore((s) => s.contract.aiReport);
   const setTermsConfirmed = useDraftAuditStore((s) => s.setTermsConfirmed);
   const nextStep = useDraftAuditStore((s) => s.nextStep);
   const previousStep = useDraftAuditStore((s) => s.previousStep);
@@ -33,6 +34,7 @@ export function ReviewTermsStep({ focusHeading }: { focusHeading: boolean }) {
   // A term flagged for review is never confirmed in bulk, however sure the reader said it was.
   const clearButUnconfirmed = terms.filter((t) => !t.confirmed && t.confidence === "high" && !t.needsReview).map((t) => t.id);
   const flagged = terms.filter(awaitsReview).length;
+  const notes = withGemini && aiReport ? readingNotes(aiReport) : null;
 
   return (
     <StepShell
@@ -53,10 +55,17 @@ export function ReviewTermsStep({ focusHeading }: { focusHeading: boolean }) {
               automatic check on the quoted wording failed.
             </p>
           ) : null}
+          {notes?.leftOut ? <p className="mt-1">{notes.leftOut}</p> : null}
         </Notice>
       ) : sample ? (
         <Notice className="mb-5">
           This is the sample agreement. Its clearly worded terms are already confirmed, so you can go straight on.
+        </Notice>
+      ) : null}
+
+      {notes?.incomplete ? (
+        <Notice tone="warning" className="mb-5" title={notes.incomplete.title}>
+          {notes.incomplete.text}
         </Notice>
       ) : null}
 

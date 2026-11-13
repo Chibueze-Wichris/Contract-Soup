@@ -186,6 +186,22 @@ test("no more than the allowed number of items is kept", () => {
   assert.equal(out.terms.length, 3);
   assert.equal(out.risks.length, 2);
   assert.deepEqual(out.stats.rejected, { over_limit: 4 });
+  assert.equal(out.stats.termsOverLimit, 2);
+  assert.equal(out.stats.risksOverLimit, 2);
+});
+
+test("an answer that reaches the most provisions it may hold says so, because the pages may hold more", () => {
+  const three = Array.from({ length: 3 }, (_, i) => ({ ...SOUND_PROVISIONS[i], ref: `x${i}` }));
+  const limits = { ...L, maxTerms: 3 };
+  // The model was told to stop at three and did. Nothing was cut here, but something may be missing.
+  const atLimit = interpretModelOutput({ provisions: three, risks: [] }, SAMPLE_PAGES, limits);
+  assert.equal(atLimit.terms.length, 3);
+  assert.equal(atLimit.stats.termLimitReached, true);
+  assert.equal(atLimit.stats.termsOverLimit, 0);
+
+  const under = interpretModelOutput({ provisions: three.slice(0, 2), risks: [] }, SAMPLE_PAGES, limits);
+  assert.equal(under.stats.termLimitReached, false);
+  assert.equal(interpretModelOutput(sampleModelAnswer(), SAMPLE_PAGES, L).stats.termLimitReached, false);
 });
 
 test("observations keep only evidence that is really in the pages, and need at least one", () => {

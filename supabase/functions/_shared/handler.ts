@@ -305,6 +305,7 @@ export function createHandler(deps: HandlerDeps): (req: Request) => Promise<Resp
         risksProposed: stats.risksProposed,
         risksAccepted: stats.risksAccepted,
         pagesCorrected: stats.pagesCorrected,
+        termLimitReached: stats.termLimitReached,
       });
       const body: ExtractResponseBody = { model: settings.model, terms, risks, stats };
       return send(200, body);
