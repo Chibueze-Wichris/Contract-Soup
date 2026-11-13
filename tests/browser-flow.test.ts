@@ -16,7 +16,7 @@
  */
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -39,6 +39,8 @@ const CLAIMS_DATA = /C-\d{5}|M-\d{4}|Pine Street Pharmacy|"claimId"|"member"|"bi
 
 let project: StandIn;
 let app: { origin: string; close(): Promise<void> };
+/** The same app built without VITE_ANALYZER_MODE=gemini. */
+let plainApp: { origin: string; close(): Promise<void> };
 let browser: Browser;
 let page: Page;
 let folder = "";
@@ -52,15 +54,25 @@ before(
     folder = mkdtempSync(path.join(os.tmpdir(), "contractsoup-browser-"));
     files = writeSampleFiles(folder);
 
-    // The project's address is fixed into the app when it is built, as on a real deployment.
+    // The project's address is fixed into the app when it is built, as on a real deployment. So is the
+    // switch that offers the Gemini reader. A value set here wins over one in a .env file.
+    const build = (outDir: string, mode: string): Promise<void> =>
+      new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [path.join(ROOT, "node_modules/vite/bin/vite.js"), "build", "--outDir", outDir, "--emptyOutDir", "--logLevel", "error"], {
+          cwd: ROOT,
+          env: { ...process.env, VITE_SUPABASE_URL: project.origin, VITE_SUPABASE_PUBLISHABLE_KEY: STAND_IN_PUBLISHABLE_KEY, VITE_ANALYZER_MODE: mode },
+          stdio: ["ignore", "ignore", "pipe"],
+        });
+        let complaints = "";
+        child.stderr.on("data", (chunk: Buffer) => (complaints += chunk.toString("utf8")));
+        child.on("error", reject);
+        child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`the app did not build: ${complaints}`))));
+      });
     const dist = path.join(folder, "dist");
-    const built = spawnSync(process.execPath, [path.join(ROOT, "node_modules/vite/bin/vite.js"), "build", "--outDir", dist, "--emptyOutDir", "--logLevel", "error"], {
-      cwd: ROOT,
-      encoding: "utf8",
-      env: { ...process.env, VITE_SUPABASE_URL: project.origin, VITE_SUPABASE_PUBLISHABLE_KEY: STAND_IN_PUBLISHABLE_KEY },
-    });
-    assert.equal(built.status, 0, `the app did not build: ${built.stderr}`);
+    const plainDist = path.join(folder, "dist-plain");
+    await Promise.all([build(dist, "gemini"), build(plainDist, "local")]);
     app = await serveFolder(dist);
+    plainApp = await serveFolder(plainDist);
     assert.notEqual(app.origin, project.origin, "the app and the project are different origins");
 
     browser = await launchBrowser();
@@ -74,19 +86,24 @@ before(
       if (/Failed to load resource|blocked by CORS policy/.test(message.text())) return;
       problems.push(`console: ${message.text()}`);
     });
-
-    await page.goto(`${app.origin}/`, { waitUntil: "networkidle0" });
-    await page.type('input[type="email"]', STAND_IN_USER.email);
-    await page.type('input[type="password"]', STAND_IN_USER.password);
-    await page.click('button[type="submit"]');
-    await page.waitForFunction(() => !document.body.innerText.includes("Work email"), { timeout: 20_000 });
+    await signIn(app.origin);
   },
   { timeout: 300_000 },
 );
 
+/** Signs in to the app served at this address. Each address keeps its own session. */
+async function signIn(origin: string): Promise<void> {
+  await page.goto(`${origin}/`, { waitUntil: "networkidle0" });
+  await page.type('input[type="email"]', STAND_IN_USER.email);
+  await page.type('input[type="password"]', STAND_IN_USER.password);
+  await page.click('button[type="submit"]');
+  await page.waitForFunction(() => !document.body.innerText.includes("Work email"), { timeout: 20_000 });
+}
+
 after(async () => {
   await browser?.close();
   await app?.close();
+  await plainApp?.close();
   await project?.close();
   if (folder) rmSync(folder, { recursive: true, force: true });
 });
@@ -403,6 +420,29 @@ test("Settings can check the reader, and sends no contract text to do it", optio
   project.mode = "not-deployed";
   await clickButton(page, "Check AI reader");
   assert.ok(await waitForText(page, "Most likely the extract-contract-terms function has not been deployed"));
+});
+
+test("a build that does not ask for the Gemini reader does not offer it, and says how to turn it on", options, async () => {
+  project.forget();
+  await signIn(plainApp.origin);
+  await page.goto(`${plainApp.origin}/#/audit/new`, { waitUntil: "networkidle0" });
+  assert.ok(await waitForText(page, "Drag and drop your contract PDF here"));
+  const upload = await pageText(page);
+  assert.doesNotMatch(upload, /Who reads the contract|Gemini/, "the first step is as it was before the Gemini reader");
+  assert.equal(await exists(GEMINI_CHOICE), false);
+
+  // The sample is read by the built-in reader, on the device.
+  await clickButton(page, "Try the sample");
+  assert.ok(await waitForText(page, "terms confirmed"));
+  assert.doesNotMatch(await pageText(page), /Read by Gemini/);
+  assert.equal(sentAnything(), 0, "nothing was sent to the function");
+
+  await page.goto(`${plainApp.origin}/#/settings`, { waitUntil: "networkidle0" });
+  assert.ok(await waitForText(page, "Off in this build"));
+  const settings = await pageText(page);
+  assert.match(settings, /VITE_ANALYZER_MODE=gemini/);
+  assert.doesNotMatch(settings, /Check AI reader/);
+  await shot(page, "10-reader-turned-off");
 });
 
 test("the browser reported no errors of its own along the way", options, () => {

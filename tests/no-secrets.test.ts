@@ -85,8 +85,12 @@ test("the committed templates hold placeholders only, and real env files are ign
   assert.equal(key, "YOUR_GEMINI_API_KEY_HERE");
   assert.equal(/AIza[0-9A-Za-z_-]{30,}/.test(template), false);
 
+  // Everything in the web app's env template ends up in the browser. It may hold the switch that
+  // offers the Gemini reader. It may not hold a Gemini key, or any setting named after Gemini.
   const root = readFileSync(path.join(ROOT, ".env.example"), "utf8");
-  assert.equal(/GEMINI/i.test(root), false, "the web app's env template has nothing about Gemini in it");
+  assert.equal(/^[#\s]*[A-Za-z0-9_]*GEMINI[A-Za-z0-9_]*\s*=/im.test(root), false, "no setting of the web app is named after Gemini");
+  assert.equal(/GEMINI_API_KEY|AIza[0-9A-Za-z_-]{30,}/.test(root), false, "the web app's env template names no Gemini key and holds none");
+  assert.equal(/^[#\s]*VITE_ANALYZER_MODE=(.*)$/m.exec(root)?.[1], "gemini", "the switch is there, and it is a word, not a key");
 
   const ignored = (file: string): boolean => {
     try {

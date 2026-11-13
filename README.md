@@ -72,7 +72,9 @@ What stays the same:
 - **Nothing happens silently.** The reader is chosen for each audit and needs a tick of agreement each time.
   If Gemini fails, the audit stops and says why. The built-in reader takes over only when you ask it to.
 
-It is offered only in builds that have sign-in, because the request is made as the signed-in person.
+It is offered only in builds that ask for it (step 5 below) and have sign-in, because the request is made as
+the signed-in person. Without both, the first step has no choice of reader and every contract is read on the
+device.
 
 ### Set it up
 
@@ -101,14 +103,23 @@ and a Gemini API key.
    supabase functions deploy extract-contract-terms
    ```
 
-5. **Check it.** Sign in to the app, open **Settings** and press **Check AI reader**. "Ready" means the
+5. **Turn the choice on in the app.** Add this line to the root `.env`, or to the settings of your hosting
+   service, and build again:
+
+   ```
+   VITE_ANALYZER_MODE=gemini
+   ```
+
+   It is a switch, not a key. It makes the first step of an audit offer the Gemini reader. The built-in
+   reader stays the one chosen until a person picks Gemini and agrees to send that contract's text.
+6. **Check it.** Sign in to the app, open **Settings** and press **Check AI reader**. "Ready" means the
    function is deployed, has a key and reached the model. If not, the message says which of those failed.
    The check sends no contract text.
-6. **Decide who may use it.** Every request costs you Gemini usage. Unless you limit it, anyone who can sign
+7. **Decide who may use it.** Every request costs you Gemini usage. Unless you limit it, anyone who can sign
    in to the project can use the reader. Set `AI_ALLOWED_USER_IDS` to the accounts that may, and turn off new
    sign-ups in the Supabase dashboard if you do not want them.
 
-**Where the key may and may not go.** The key is read in one place,
+**Where the key may and may not go.** The Gemini key is read in one place,
 [`supabase/functions/extract-contract-terms/index.ts`](supabase/functions/extract-contract-terms/index.ts),
 from the function's environment. Never put it in the root `.env`, in a variable whose name starts with
 `VITE_`, or anywhere under `src/`: everything there ends up in the browser. `npm test` fails if it finds a key,
@@ -125,9 +136,9 @@ supabase functions serve extract-contract-terms
 ```
 
 `supabase start` reads `supabase/functions/.env`, which git ignores. Point the app at the local project by
-putting the URL and publishable key that `supabase status` prints into the root `.env`, then restart
-`npm run dev`. The local project starts empty: run [`supabase/audits.sql`](supabase/audits.sql) in its SQL
-editor and sign up an account in the app.
+putting the URL and publishable key that `supabase status` prints into the root `.env`, next to
+`VITE_ANALYZER_MODE=gemini`, then restart `npm run dev`. The local project starts empty: run
+[`supabase/audits.sql`](supabase/audits.sql) in its SQL editor and sign up an account in the app.
 
 ### Settings
 

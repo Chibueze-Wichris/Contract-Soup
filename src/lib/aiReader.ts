@@ -10,8 +10,16 @@ import { readErrorResponse, readStatusResponse, type AiRequestBody } from "../..
  * the Gemini key and is the only thing that talks to Google.
  */
 
-/** The AI reader needs an account to call the function with, so it is only offered in builds that have sign-in. */
-export const AI_READER_AVAILABLE = isSupabaseConfigured;
+/** True when the build asks for the Gemini reader with VITE_ANALYZER_MODE=gemini. A switch, not a key. */
+export const AI_READER_WANTED = (import.meta.env.VITE_ANALYZER_MODE ?? "").trim().toLowerCase() === "gemini";
+
+/**
+ * Whether the Gemini reader is offered. The build has to ask for it, and has to have sign-in,
+ * because the function is called as the signed-in person. Offering it changes nothing by itself:
+ * the built-in reader stays the one chosen until a person picks Gemini for an audit and agrees to
+ * send that contract's text.
+ */
+export const AI_READER_AVAILABLE = AI_READER_WANTED && isSupabaseConfigured;
 
 export const AI_FUNCTION_NAME = "extract-contract-terms";
 

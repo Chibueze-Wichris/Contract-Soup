@@ -6,7 +6,7 @@ import { DataToolsCard } from "@/components/settings/DataToolsCard";
 import { ThresholdsCard } from "@/components/settings/ThresholdsCard";
 import { Badge, Button, Card, CardHeader, Input, Modal, SeverityBadge, SuccessBadge, toast } from "@/components/ui";
 import { useThemeStore, type ThemePreference } from "@/store/useThemeStore";
-import { AI_READER_AVAILABLE } from "@/lib/aiReader";
+import { AI_READER_AVAILABLE, AI_READER_WANTED } from "@/lib/aiReader";
 import { cn } from "@/lib/cn";
 import { isSupabaseConfigured } from "@/lib/supabase";
 
@@ -16,7 +16,7 @@ const THEME_OPTIONS: { value: ThemePreference; label: string; icon: LucideIcon }
   { value: "dark", label: "Dark", icon: Moon },
 ];
 
-/** Appearance, the check thresholds, the Gemini reader (in builds with sign-in), tools for the saved reports, and a preview of the base components. */
+/** Appearance, the check thresholds, the Gemini reader (in builds that offer it), tools for the saved reports, and a preview of the base components. */
 export default function Settings() {
   const preference = useThemeStore((s) => s.preference);
   const setPreference = useThemeStore((s) => s.setPreference);
@@ -63,7 +63,22 @@ export default function Settings() {
 
         <ThresholdsCard />
 
-        {AI_READER_AVAILABLE ? <AiReaderCard /> : null}
+        {AI_READER_AVAILABLE ? (
+          <AiReaderCard />
+        ) : AI_READER_WANTED || isSupabaseConfigured ? (
+          // Said only where someone may be looking for it: a build that asked for the reader, or one that has sign-in.
+          <Card>
+            <CardHeader
+              className="mb-0"
+              title="Gemini reader"
+              description={
+                AI_READER_WANTED
+                  ? "Off. This build asks for the Gemini reader, but it also needs sign-in, which is not set up."
+                  : "Off in this build. To offer it as a choice on each audit, build the app with VITE_ANALYZER_MODE=gemini. The README has the steps."
+              }
+            />
+          </Card>
+        ) : null}
 
         <DataToolsCard />
 
