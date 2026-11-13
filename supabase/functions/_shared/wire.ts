@@ -118,10 +118,15 @@ const isIsoOrNull = (v: unknown): v is string | null => v === null || (typeof v 
 
 const TEXT = 2_000;
 const QUOTE = 5_000;
+/**
+ * A term's name and its value in words. Kept well under what a saved audit allows for them
+ * (500 characters in src/lib/auditRecord.ts), so that anything accepted here can be saved and read back.
+ */
+const NAME = 300;
 
 function readTerm(v: unknown): AiTerm | null {
   if (!isObject(v)) return null;
-  const valueOk = v.value === null || (typeof v.value === "number" && Number.isFinite(v.value)) || isText(v.value, TEXT);
+  const valueOk = v.value === null || (typeof v.value === "number" && Number.isFinite(v.value)) || isText(v.value, NAME);
   const notice = v.noticePeriod;
   const noticeOk =
     notice === null ||
@@ -134,7 +139,7 @@ function readTerm(v: unknown): AiTerm | null {
     !isText(v.ref, 64) ||
     !isText(v.category, 64) ||
     !AI_CATEGORY_IDS.includes(v.category) ||
-    !isText(v.label, TEXT) ||
+    !isText(v.label, NAME) ||
     !valueOk ||
     !isText(v.unit, 32) ||
     !isPage(v.page) ||

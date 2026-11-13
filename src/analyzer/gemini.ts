@@ -192,6 +192,13 @@ function failureFrom(result: AiTransportResult): AiReaderError {
 
 const RANK: Record<Severity, number> = { high: 3, medium: 2, low: 1 };
 
+/**
+ * The most one reading may hold. Far above what a real contract gives, and under what a saved
+ * audit accepts (src/lib/auditRecord.ts), so a reading that succeeds can always be saved.
+ */
+export const MAX_AI_TERMS = 4_000;
+export const MAX_AI_OBSERVATIONS = 2_000;
+
 export class GeminiAnalyzer implements Analyzer {
   /** Finished batches, by position, so that trying again after a failure does not read the same pages twice. */
   private readonly done = new Map<number, BatchResult>();
@@ -263,6 +270,14 @@ export class GeminiAnalyzer implements Analyzer {
       }
       for (const o of result.observations) observations.push({ ...o, relatedTermIds: o.relatedTermIds.map(rename) });
     });
+
+    if (terms.length > MAX_AI_TERMS || observations.length > MAX_AI_OBSERVATIONS) {
+      throw new AiReaderError(
+        "too_large",
+        "The AI reader found more in this contract than one audit can hold. Split the contract into parts, or use the built-in reader.",
+        false,
+      );
+    }
 
     terms.sort((a, b) => a.pageRef - b.pageRef);
     const finalIds = new Map(terms.map((t, i) => [t.id, `ai-${i + 1}`]));

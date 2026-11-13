@@ -106,7 +106,8 @@ export function toRecord(a: Audit): Audit {
 
 const SHORT_TEXT = 500;
 const LONG_TEXT = 100_000;
-const MAX_TERMS = 1_000;
+/** More than the AI reader may return for one contract (MAX_AI_TERMS in src/analyzer/gemini.ts), so its audits can always be read back. */
+const MAX_TERMS = 5_000;
 const MAX_FINDINGS = 5_000;
 const MAX_EVIDENCE = 1_000;
 
