@@ -96,6 +96,21 @@ test("the model, the thinking level and the API address come from settings", asy
   assert.equal(sent[0].headers.has("api-revision"), false);
 });
 
+test("the key is only ever sent over https, or to a stand-in on this machine", () => {
+  const baseUrl = (value: string): string => geminiSettingsFromEnv((name) => (name === "GEMINI_API_BASE_URL" ? value : undefined)).baseUrl;
+  const google = "https://generativelanguage.googleapis.com";
+  assert.equal(baseUrl("https://proxy.example.com/gemini/"), "https://proxy.example.com/gemini");
+  assert.equal(baseUrl("http://localhost:8787"), "http://localhost:8787");
+  assert.equal(baseUrl("http://127.0.0.1:9/"), "http://127.0.0.1:9");
+  assert.equal(baseUrl("http://host.docker.internal:8787"), "http://host.docker.internal:8787");
+  // Plain http to anywhere else would put the key on the network in the clear. It is ignored.
+  assert.equal(baseUrl("http://proxy.example.com"), google);
+  assert.equal(baseUrl("http://127.0.0.1.example.com"), google);
+  assert.equal(baseUrl("http://localhost.example.com:80/"), google);
+  assert.equal(baseUrl("ftp://example.com"), google);
+  assert.equal(baseUrl("not a url"), google);
+});
+
 test("readInteraction finds the answer text in the current and the older response shapes", () => {
   assert.equal(readInteraction(interaction("hello")).text, "hello");
   assert.equal(

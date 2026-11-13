@@ -11,27 +11,114 @@ export interface PageInput {
   text: string;
 }
 
+const APOSTROPHES = /[\u2018\u2019\u201A\u201B\u2032\u0060\u00B4]/g;
+const QUOTE_MARKS = /[\u201C\u201D\u201E\u201F\u2033\u00AB\u00BB]/g;
+const INVISIBLE = /[\u00AD\u200B-\u200D\u2060\uFEFF]/g;
+const DASHES = /[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g;
+const CONTROLS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+const WHITE_SPACE = /\s/;
+/**
+ * One character together with the accents that follow it. Invisible characters among them belong
+ * to the same piece, so that taking them out cannot leave an accent stranded.
+ */
+const CLUSTER = /[\s\S][\p{M}\u00AD\u200B-\u200D\u2060\uFEFF]*/uy;
+
+/** The folding applied to one cluster. Applied piece by piece, so that every folded character can be traced to its source. */
+function foldCluster(cluster: string): string {
+  return cluster
+    .replace(INVISIBLE, "")
+    .replace(APOSTROPHES, "'")
+    .replace(QUOTE_MARKS, '"')
+    .normalize("NFKC")
+    .replace(DASHES, "-")
+    .replace(CONTROLS, " ")
+    .toLowerCase()
+    .normalize("NFKC"); // again: lower case can leave accents in an order the first pass would not have
+}
+
+/** What each plain ASCII character folds to. The common case, so it is a table lookup. */
+const ASCII: string[] = Array.from({ length: 128 }, (_, code) => {
+  if (code <= 0x20 || code === 0x7f) return " ";
+  if (code === 0x60) return "'";
+  return String.fromCharCode(code).toLowerCase();
+});
+
+interface Folded {
+  /** The folded text. */
+  text: string;
+  /** For each character of `text`, where the piece of the source it came from starts. Empty unless asked for. */
+  from: number[];
+  /** For each character of `text`, where the piece of the source it came from ends. */
+  to: number[];
+}
+
 /**
  * Folds away the differences that PDF text extraction and typography introduce, so that the same
  * words compare equal: Unicode forms, curly quotes, the many dash characters, invisible
- * characters, runs of white space, and capital letters.
+ * characters, runs of white space, and capital letters. With `trace`, it also records where in
+ * the source each folded character came from, so a match can be turned back into the source's
+ * own characters.
  */
-export function normalizeText(text: string): string {
-  return text
-    .replace(/[\u2018\u2019\u201A\u201B\u2032\u0060\u00B4]/g, "'")
-    .replace(/[\u201C\u201D\u201E\u201F\u2033\u00AB\u00BB]/g, '"')
-    .normalize("NFKC")
-    .replace(/[\u00AD\u200B-\u200D\u2060\uFEFF]/g, "")
-    .replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, "-")
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
+function fold(source: string, trace: boolean): Folded {
+  const out: string[] = [];
+  const from: number[] = [];
+  const to: number[] = [];
+  let afterSpace = true; // true at the start, so leading white space is dropped
+  const length = source.length;
+  let i = 0;
+  while (i < length) {
+    const code = source.charCodeAt(i);
+    let piece: string;
+    let next: number;
+    // Plain ASCII with nothing after it that could belong to it: one character in, one character out.
+    const after = i + 1 === length ? 0x20 : source.charCodeAt(i + 1);
+    if (code < 0x80 && after < 0x300 && after !== 0xad) {
+      piece = ASCII[code];
+      next = i + 1;
+    } else {
+      CLUSTER.lastIndex = i;
+      const cluster = CLUSTER.exec(source)?.[0] ?? source[i];
+      piece = foldCluster(cluster);
+      next = i + cluster.length;
+    }
+    for (let k = 0; k < piece.length; k += 1) {
+      const ch = piece[k];
+      if (ch === " " || WHITE_SPACE.test(ch)) {
+        if (afterSpace) continue;
+        afterSpace = true;
+        out.push(" ");
+      } else {
+        afterSpace = false;
+        out.push(ch);
+      }
+      if (trace) {
+        from.push(i);
+        to.push(next);
+      }
+    }
+    i = next;
+  }
+  if (out.length > 0 && out[out.length - 1] === " ") {
+    out.pop();
+    if (trace) {
+      from.pop();
+      to.pop();
+    }
+  }
+  return { text: out.join(""), from, to };
 }
 
-/** The normalised text with spaces and hyphens taken out, for words split across lines ("adminis- tration"). */
-function loosen(normalized: string): string {
-  return normalized.replace(/[\s-]+/g, "");
+/**
+ * The text with typography folded away: straight quotes, plain hyphens, single spaces, no
+ * invisible characters, lower case. Two pieces of text that read the same fold to the same string.
+ */
+export function normalizeText(text: string): string {
+  return fold(text, false).text;
+}
+
+/** Tidies a piece of page text for showing on one line. The words and their spelling are untouched. */
+function onOneLine(text: string): string {
+  return text.replace(INVISIBLE, "").replace(CONTROLS, " ").replace(/\s+/g, " ").trim();
 }
 
 export type MatchLevel = "exact" | "loose";
@@ -43,13 +130,26 @@ export interface QuoteMatch {
   level: MatchLevel;
   /** True when the quotation was found on a different page from the one named. */
   moved: boolean;
+  /**
+   * The wording as the page itself has it: the page's own characters, on one line. This, and
+   * not the model's copy of it, is what should be kept and shown.
+   */
+  text: string;
+}
+
+interface PreparedPage {
+  raw: string;
+  folded: Folded;
+  /** The folded text with spaces and hyphens taken out, for words split across lines ("adminis- tration"). */
+  loose: string | null;
+  /** For each character of `loose`, its position in the folded text. */
+  looseAt: number[];
 }
 
 /** The pages of one request, prepared for looking quotations up. */
 export class PageIndex {
   private readonly raw = new Map<number, string>();
-  private readonly exact = new Map<number, string>();
-  private readonly loose = new Map<number, string>();
+  private readonly prepared = new Map<number, PreparedPage>();
   /** Page numbers in ascending order. */
   readonly pageNumbers: readonly number[];
 
@@ -62,43 +162,77 @@ export class PageIndex {
     return this.raw.has(page);
   }
 
-  private exactText(page: number): string {
-    let text = this.exact.get(page);
-    if (text === undefined) {
-      text = normalizeText(this.raw.get(page) ?? "");
-      this.exact.set(page, text);
+  private page(page: number): PreparedPage {
+    let prepared = this.prepared.get(page);
+    if (!prepared) {
+      const raw = this.raw.get(page) ?? "";
+      prepared = { raw, folded: fold(raw, true), loose: null, looseAt: [] };
+      this.prepared.set(page, prepared);
     }
-    return text;
+    return prepared;
   }
 
-  private looseText(page: number): string {
-    let text = this.loose.get(page);
-    if (text === undefined) {
-      text = loosen(this.exactText(page));
-      this.loose.set(page, text);
+  private loose(prepared: PreparedPage): string {
+    if (prepared.loose === null) {
+      const kept: string[] = [];
+      const { text } = prepared.folded;
+      for (let i = 0; i < text.length; i += 1) {
+        const ch = text[i];
+        if (ch === " " || ch === "-") continue;
+        kept.push(ch);
+        prepared.looseAt.push(i);
+      }
+      prepared.loose = kept.join("");
     }
-    return text;
+    return prepared.loose;
+  }
+
+  /** The page's own characters for the folded characters from `start` up to, not including, `end`. */
+  private wording(prepared: PreparedPage, start: number, end: number): string {
+    return onOneLine(prepared.raw.slice(prepared.folded.from[start], prepared.folded.to[end - 1]));
+  }
+
+  private exactOn(page: number, wanted: string): string | null {
+    const prepared = this.page(page);
+    const at = prepared.folded.text.indexOf(wanted);
+    return at === -1 ? null : this.wording(prepared, at, at + wanted.length);
+  }
+
+  private looseOn(page: number, wantedLoose: string): string | null {
+    const prepared = this.page(page);
+    const at = this.loose(prepared).indexOf(wantedLoose);
+    if (at === -1) return null;
+    return this.wording(prepared, prepared.looseAt[at], prepared.looseAt[at + wantedLoose.length - 1] + 1);
   }
 
   /**
    * Looks for a quotation, first on the page it names and then on the other pages, nearest first.
    * Returns null when the page is not one of the supplied pages or the words are nowhere to be found.
+   * What comes back in `text` is copied from the page, never from the quotation.
    */
   find(quote: string, namedPage: number): QuoteMatch | null {
     if (!this.has(namedPage)) return null;
     const wanted = normalizeText(quote);
     if (!wanted) return null;
-    const wantedLoose = loosen(wanted);
+    const wantedLoose = wanted.replace(/[ -]+/g, "");
     if (!wantedLoose) return null;
 
-    if (this.exactText(namedPage).includes(wanted)) return { page: namedPage, level: "exact", moved: false };
-    if (this.looseText(namedPage).includes(wantedLoose)) return { page: namedPage, level: "loose", moved: false };
+    let text = this.exactOn(namedPage, wanted);
+    if (text !== null) return { page: namedPage, level: "exact", moved: false, text };
+    text = this.looseOn(namedPage, wantedLoose);
+    if (text !== null) return { page: namedPage, level: "loose", moved: false, text };
 
     const others = this.pageNumbers
       .filter((p) => p !== namedPage)
       .sort((a, b) => Math.abs(a - namedPage) - Math.abs(b - namedPage) || a - b);
-    for (const page of others) if (this.exactText(page).includes(wanted)) return { page, level: "exact", moved: true };
-    for (const page of others) if (this.looseText(page).includes(wantedLoose)) return { page, level: "loose", moved: true };
+    for (const page of others) {
+      text = this.exactOn(page, wanted);
+      if (text !== null) return { page, level: "exact", moved: true, text };
+    }
+    for (const page of others) {
+      text = this.looseOn(page, wantedLoose);
+      if (text !== null) return { page, level: "loose", moved: true, text };
+    }
     return null;
   }
 }

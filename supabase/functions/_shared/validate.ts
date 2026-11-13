@@ -190,7 +190,8 @@ function checkQuote(page: unknown, quote: unknown, index: PageIndex, limits: Lim
   if (text.length > limits.maxQuoteChars) return "quote_too_long";
   const match = index.find(text, page);
   if (!match) return "quote_not_found";
-  return { page: match.page, quote: text.replace(/\s+/g, " "), loose: match.level === "loose", moved: match.moved };
+  // From here on the quotation is the page's own wording. The model's copy of it is not kept.
+  return { page: match.page, quote: match.text, loose: match.level === "loose", moved: match.moved };
 }
 
 function formatFigure(value: number): string {

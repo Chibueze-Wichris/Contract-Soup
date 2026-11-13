@@ -90,10 +90,14 @@ export function limitsFromEnv(env: EnvReader): Limits {
   };
 }
 
+/** https anywhere, or http to this machine only (localhost, 127.0.0.1, ::1, host.docker.internal). */
+const SAFE_BASE_URL = /^(?:https:\/\/[^\s]+|http:\/\/(?:localhost|127\.0\.0\.1|\[::1\]|host\.docker\.internal)(?::\d{1,5})?(?:\/[^\s]*)?)$/;
+
 export function geminiSettingsFromEnv(env: EnvReader): GeminiSettings {
   return {
     model: textFromEnv(env, "GEMINI_MODEL", DEFAULT_MODEL, /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/),
-    baseUrl: textFromEnv(env, "GEMINI_API_BASE_URL", DEFAULT_API_BASE_URL, /^https?:\/\/[^\s]+$/).replace(/\/+$/, ""),
+    // The key travels in a header of every call, so only https is accepted. Plain http is for a stand-in on this machine.
+    baseUrl: textFromEnv(env, "GEMINI_API_BASE_URL", DEFAULT_API_BASE_URL, SAFE_BASE_URL).replace(/\/+$/, ""),
     apiVersion: textFromEnv(env, "GEMINI_API_VERSION", DEFAULT_API_VERSION, /^v[0-9][A-Za-z0-9]{0,15}$/),
     apiRevision: env("GEMINI_API_REVISION") === "" ? "" : textFromEnv(env, "GEMINI_API_REVISION", DEFAULT_API_REVISION, /^[0-9A-Za-z._-]{1,32}$/),
     thinkingLevel: textFromEnv(env, "GEMINI_THINKING_LEVEL", "", /^[a-z]{1,16}$/),

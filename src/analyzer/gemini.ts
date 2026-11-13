@@ -322,10 +322,13 @@ export class GeminiAnalyzer implements Analyzer {
 
 // ---- Reading one answer from the Edge Function ----
 
-function toTerm(t: AiTerm, quoteStatesValue: boolean): ContractTerm {
+/** `wording` is the quotation as this browser's copy of the page has it. It is what the reviewer is shown. */
+function toTerm(t: AiTerm, wording: string): ContractTerm {
   const reasons = [...t.reviewReasons];
   let confidence = t.confidence;
   // The server makes this check too. It is repeated here so that a figure is never trusted on the server's word alone.
+  const figure = typeof t.value === "number" ? findFigure(t.value, wording) : null;
+  const quoteStatesValue = typeof t.value !== "number" || figure !== null;
   if (typeof t.value === "number" && !quoteStatesValue && !reasons.some((r) => /not found in the quoted wording/.test(r))) {
     reasons.push(`The figure ${t.value.toLocaleString("en-US", { maximumFractionDigits: 6 })} was not found in the quoted wording.`);
     confidence = "low";
@@ -339,10 +342,10 @@ function toTerm(t: AiTerm, quoteStatesValue: boolean): ContractTerm {
     // A unit only makes sense after a number. The review screen says so too.
     unit: typeof t.value === "number" ? t.unit : "",
     pageRef: t.page,
-    snippet: t.quote,
+    snippet: wording,
     confidence,
     confirmed: false, // always: a person confirms every term the AI reader finds
-    ...(t.valueMatch && quoteStatesValue ? { match: t.valueMatch } : {}),
+    ...(figure !== null ? { match: figure } : {}),
     origin: "ai",
     ...(t.summary ? { summary: t.summary } : {}),
     ...(t.conditions.length > 0 ? { conditions: t.conditions } : {}),
@@ -365,19 +368,21 @@ function readBatch(body: unknown, pages: readonly PageText[]): BatchResult {
   if (!answer) throw new AiReaderError("bad_answer", "The AI reader sent back something that could not be read. Try again.", true);
 
   const index = new PageIndex(pages);
-  const onItsPage = (page: number, quote: string): boolean => {
+  /** The wording as this browser's copy of the page has it, or null when it is not on that page. */
+  const wordingOn = (page: number, quote: string): string | null => {
     const match = index.find(quote, page);
-    return match !== null && !match.moved;
+    return match !== null && !match.moved ? match.text : null;
   };
 
   const terms: ContractTerm[] = [];
   let unverified = 0;
   for (const t of answer.terms) {
-    if (!AI_CATEGORY_IDS.includes(t.category) || !onItsPage(t.page, t.quote)) {
+    const wording = AI_CATEGORY_IDS.includes(t.category) ? wordingOn(t.page, t.quote) : null;
+    if (wording === null) {
       unverified += 1;
       continue;
     }
-    terms.push(toTerm(t, typeof t.value === "number" ? findFigure(t.value, t.quote) !== null : true));
+    terms.push(toTerm(t, wording));
   }
   const kept = new Set(terms.map((t) => t.id));
   for (const term of terms) {
@@ -389,7 +394,10 @@ function readBatch(body: unknown, pages: readonly PageText[]): BatchResult {
   const observations: HeldObservation[] = [];
   let unverifiedObservations = 0;
   for (const r of answer.risks as AiRisk[]) {
-    const evidence = r.evidence.filter((e) => onItsPage(e.page, e.quote)).map((e) => ({ page: e.page, snippet: e.quote }));
+    const evidence = r.evidence.flatMap((e) => {
+      const wording = wordingOn(e.page, e.quote);
+      return wording === null ? [] : [{ page: e.page, snippet: wording }];
+    });
     if (evidence.length === 0) {
       unverifiedObservations += 1;
       continue;
