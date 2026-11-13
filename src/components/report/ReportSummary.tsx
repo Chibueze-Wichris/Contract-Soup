@@ -2,7 +2,7 @@ import { Suspense, lazy, useCallback, useMemo, useSyncExternalStore, type ReactN
 import type { Audit } from "@/analyzer";
 import { findingTypeLabel } from "@/analyzer/categories";
 import { Card, CardHeader, ProgressBar, SeverityBadge, Skeleton } from "@/components/ui";
-import { FINDING_STATUSES, SEVERITIES, countByStatus } from "@/lib/findings";
+import { FINDING_STATUSES, SEVERITIES, countByStatus, isAiFinding } from "@/lib/findings";
 import { formatCount, formatUsd, plural } from "@/lib/format";
 import type { ExposureDatum } from "./ExposureChart";
 
@@ -42,14 +42,23 @@ export function ReportSummary({ audit }: { audit: Audit }) {
   const byStatus = countByStatus(findings);
   const counted = findings.length - byStatus.dismissed;
   const reviewed = findings.length - byStatus.open;
+  // What Gemini noticed in the wording is listed, but it has no amount and is never part of the exposure.
+  const observations = findings.filter((f) => f.status !== "dismissed" && isAiFinding(f)).length;
+  const fromChecks = counted - observations;
   const roomForChart = useMinWidth(640);
 
   const rows = useMemo(() => {
-    const perType = new Map<string, number>();
-    for (const f of findings) if (f.status !== "dismissed") perType.set(f.type, (perType.get(f.type) ?? 0) + 1);
+    const perType = new Map<string, { count: number; priced: boolean; ai: boolean }>();
+    for (const f of findings) {
+      if (f.status === "dismissed") continue;
+      const row = perType.get(f.type) ?? { count: 0, priced: false, ai: isAiFinding(f) };
+      row.count += 1;
+      if (f.estimatedImpactUSD !== null) row.priced = true;
+      perType.set(f.type, row);
+    }
     return [...perType]
-      .map(([type, count]) => ({ type, label: findingTypeLabel(type), count, amount: summary.byType[type] ?? 0 }))
-      .sort((a, b) => b.amount - a.amount || a.label.localeCompare(b.label));
+      .map(([type, row]) => ({ type, label: findingTypeLabel(type), ...row, amount: summary.byType[type] ?? 0 }))
+      .sort((a, b) => Number(a.ai) - Number(b.ai) || b.amount - a.amount || a.label.localeCompare(b.label));
   }, [findings, summary]);
   const bars: ExposureDatum[] = rows.filter((r) => r.amount > 0);
 
@@ -59,9 +68,19 @@ export function ReportSummary({ audit }: { audit: Audit }) {
         <Stat label="Estimated exposure">
           <p className="num mt-2 text-2xl font-semibold text-ink">{formatUsd(summary.exposureUSD)}</p>
           <p className="mt-1 text-xs text-muted">
-            {counted === 0 ? "No findings are counted." : `Across ${plural(counted, "finding")}.`}
+            {counted === 0
+              ? "No findings are counted."
+              : observations === 0
+                ? `Across ${plural(counted, "finding")}.`
+                : `From ${plural(fromChecks, "finding")} of the money checks.`}
             {byStatus.dismissed > 0 ? ` ${formatCount(byStatus.dismissed)} dismissed, not counted.` : ""}
           </p>
+          {observations > 0 ? (
+            <p className="mt-1 text-xs text-muted">
+              {plural(observations, "observation")} from Gemini&rsquo;s reading {observations === 1 ? "has" : "have"} no estimate
+              and {observations === 1 ? "adds" : "add"} nothing here.
+            </p>
+          ) : null}
         </Stat>
 
         <Stat label="Findings by severity">
@@ -74,6 +93,12 @@ export function ReportSummary({ audit }: { audit: Audit }) {
             ))}
           </ul>
           {byStatus.dismissed > 0 ? <p className="mt-2 text-xs text-muted">Dismissed findings are not counted.</p> : null}
+          {observations > 0 ? (
+            <p className="mt-2 text-xs text-muted">
+              Includes {plural(observations, "observation")} from Gemini&rsquo;s reading, with the severity Gemini gave{" "}
+              {observations === 1 ? "it" : "them"}.
+            </p>
+          ) : null}
         </Stat>
 
         <Stat label="Review progress">
@@ -123,9 +148,14 @@ export function ReportSummary({ audit }: { audit: Audit }) {
                   <tr key={r.type} className="border-b border-line last:border-b-0">
                     <th scope="row" className="py-2 pr-3 font-normal text-ink">
                       {r.label}
+                      {r.ai ? <span className="block text-xs text-muted">AI reading</span> : null}
                     </th>
                     <td className="px-3 py-2 text-right text-muted">{formatCount(r.count)}</td>
-                    <td className="py-2 pl-3 text-right font-medium text-ink">{formatUsd(r.amount)}</td>
+                    {r.priced ? (
+                      <td className="py-2 pl-3 text-right font-medium text-ink">{formatUsd(r.amount)}</td>
+                    ) : (
+                      <td className="py-2 pl-3 text-right text-muted">No estimate</td>
+                    )}
                   </tr>
                 ))}
               </tbody>

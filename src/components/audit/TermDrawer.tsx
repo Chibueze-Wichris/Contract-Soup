@@ -1,12 +1,12 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { ChevronLeft, ChevronRight, Trash2 } from "lucide-react";
 import type { ContractTerm } from "@/analyzer";
-import { categoryLabel } from "@/analyzer/categories";
+import { categoryLabel, isMoneyCategory } from "@/analyzer/categories";
 import { ConfidenceBadge } from "./ConfidenceBadge";
 import { HighlightedSnippet } from "./HighlightedSnippet";
 import { ConfirmBox, UnitOptions, useTermValueField } from "./TermFields";
-import { Badge, Button, Drawer, Input, Select, Textarea } from "@/components/ui";
-import { isManualTerm, termTitle } from "@/lib/terms";
+import { AiBadge, Badge, Button, Drawer, Input, NeedsReviewBadge, Notice, Select, Textarea } from "@/components/ui";
+import { awaitsReview, describeIsoDate, describeNoticePeriod, isAiTerm, isManualTerm, termTitle } from "@/lib/terms";
 import { useDraftAuditStore } from "@/store/useDraftAuditStore";
 
 interface TermDrawerProps {
@@ -83,7 +83,15 @@ export function TermDrawer({ termId, onClose, onOpenTerm, onRemoved }: TermDrawe
           <p className="sr-only" aria-live="polite">
             {position}: {termTitle(term)}
           </p>
-          <TermDetails key={term.id} term={term} fileName={fileName} pageCount={pageCount} onRemoved={onRemoved} />
+          <TermDetails
+            key={term.id}
+            term={term}
+            related={(term.relatedTermIds ?? []).flatMap((id) => terms.filter((t) => t.id === id))}
+            fileName={fileName}
+            pageCount={pageCount}
+            onOpenTerm={onOpenTerm}
+            onRemoved={onRemoved}
+          />
         </>
       ) : null}
     </Drawer>
@@ -92,16 +100,92 @@ export function TermDrawer({ termId, onClose, onOpenTerm, onRemoved }: TermDrawe
 
 interface TermDetailsProps {
   term: ContractTerm;
+  /** The other terms this one points to. */
+  related: ContractTerm[];
   fileName: string;
   pageCount: number;
+  onOpenTerm: (id: string) => void;
   onRemoved: () => void;
 }
 
-function TermDetails({ term, fileName, pageCount, onRemoved }: TermDetailsProps) {
+/** One labelled fact in the list of what the AI reader understood. Nothing is drawn when there is nothing to say. */
+function Fact({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="grid gap-x-3 gap-y-0.5 py-2 @md:grid-cols-[8.5rem_minmax(0,1fr)]">
+      <dt className="text-xs font-medium text-muted @md:pt-0.5">{label}</dt>
+      <dd className="min-w-0 break-words text-sm text-ink">{children}</dd>
+    </div>
+  );
+}
+
+function Points({ items }: { items: readonly string[] }) {
+  return items.length === 1 ? (
+    <>{items[0]}</>
+  ) : (
+    <ul className="list-disc space-y-0.5 pl-4">
+      {items.map((item) => (
+        <li key={item}>{item}</li>
+      ))}
+    </ul>
+  );
+}
+
+/** What the AI reader took the clause to mean. Read-only: the reviewer's part is the value, the unit and Confirmed. */
+function AiReading({ term, related, onOpenTerm }: Pick<TermDetailsProps, "term" | "related" | "onOpenTerm">) {
+  const hasFacts =
+    Boolean(term.conditions?.length || term.exceptions?.length || term.relatedClauses?.length || related.length) ||
+    Boolean(term.effectiveDate || term.expirationDate || term.noticePeriod);
+  if (!term.summary && !hasFacts) return null;
+  return (
+    <section>
+      <h3 className="text-sm font-semibold text-ink">What Gemini understood</h3>
+      <p className="mt-0.5 text-xs text-muted">An interpretation of the wording above. Check it against that wording.</p>
+      {term.summary ? <p className="mt-3 break-words text-sm text-ink">{term.summary}</p> : null}
+      {hasFacts ? (
+        <dl className="mt-2 divide-y divide-line border-y border-line">
+          {term.conditions?.length ? (
+            <Fact label="Applies when">
+              <Points items={term.conditions} />
+            </Fact>
+          ) : null}
+          {term.exceptions?.length ? (
+            <Fact label="Does not apply to">
+              <Points items={term.exceptions} />
+            </Fact>
+          ) : null}
+          {term.effectiveDate ? <Fact label="Effective date">{describeIsoDate(term.effectiveDate)}</Fact> : null}
+          {term.expirationDate ? <Fact label="Expiration date">{describeIsoDate(term.expirationDate)}</Fact> : null}
+          {term.noticePeriod ? <Fact label="Notice period">{describeNoticePeriod(term.noticePeriod)}</Fact> : null}
+          {term.relatedClauses?.length ? <Fact label="Related clauses">{term.relatedClauses.join(", ")}</Fact> : null}
+          {related.length > 0 ? (
+            <Fact label="Related terms">
+              <span className="flex flex-wrap gap-x-3 gap-y-1">
+                {related.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className="rounded text-left text-sm font-medium text-brand underline underline-offset-2 hover:no-underline"
+                    onClick={() => onOpenTerm(t.id)}
+                  >
+                    {termTitle(t)}
+                    <span className="font-normal text-muted">, page {t.pageRef}</span>
+                  </button>
+                ))}
+              </span>
+            </Fact>
+          ) : null}
+        </dl>
+      ) : null}
+    </section>
+  );
+}
+
+function TermDetails({ term, related, fileName, pageCount, onOpenTerm, onRemoved }: TermDetailsProps) {
   const updateTerm = useDraftAuditStore((s) => s.updateTerm);
   const removeTerm = useDraftAuditStore((s) => s.removeTerm);
   const valueField = useTermValueField(term);
   const manual = isManualTerm(term);
+  const fromAi = isAiTerm(term);
   const [pageText, setPageText] = useState(String(term.pageRef));
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const removeButton = useRef<HTMLButtonElement>(null);
@@ -113,9 +197,17 @@ function TermDetails({ term, fileName, pageCount, onRemoved }: TermDetailsProps)
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-2">
         <ConfidenceBadge term={term} />
+        {fromAi ? <AiBadge /> : null}
+        {awaitsReview(term) ? <NeedsReviewBadge /> : null}
         {/* The category is only worth showing when the term has a name of its own. */}
-        {termTitle(term) === categoryLabel(term.category) ? null : <Badge>{categoryLabel(term.category)}</Badge>}
+        {termTitle(term) === categoryLabel(term.category) ? null : <Badge className="whitespace-normal">{categoryLabel(term.category)}</Badge>}
       </div>
+
+      {term.needsReview && term.reviewReasons?.length ? (
+        <Notice tone="warning" title={term.confirmed ? "This term was flagged for a closer look" : "Look closely before confirming"}>
+          <Points items={term.reviewReasons} />
+        </Notice>
+      ) : null}
 
       {manual ? (
         <div className="grid gap-4">
@@ -161,11 +253,18 @@ function TermDetails({ term, fileName, pageCount, onRemoved }: TermDetailsProps)
           ) : (
             <p className="mt-3 text-sm text-muted">No wording was kept for this term.</p>
           )}
-          {term.snippet && term.match ? (
+          {term.snippet && fromAi ? (
+            <p className="mt-2 text-xs text-muted">
+              Checked: this wording is on page {term.pageRef} of the PDF.
+              {term.match ? " The marked figure is the value Gemini read." : ""}
+            </p>
+          ) : term.snippet && term.match ? (
             <p className="mt-2 text-xs text-muted">The marked words are what this term was found by.</p>
           ) : null}
         </section>
       )}
+
+      {fromAi ? <AiReading term={term} related={related} onOpenTerm={onOpenTerm} /> : null}
 
       <section>
         <h3 className="text-sm font-semibold text-ink">What it says</h3>
@@ -177,7 +276,10 @@ function TermDetails({ term, fileName, pageCount, onRemoved }: TermDetailsProps)
           </Select>
         </div>
         <div className="mt-4">
-          <ConfirmBox term={term} detail="Use this term to check claims." />
+          <ConfirmBox
+            term={term}
+            detail={isMoneyCategory(term.category) ? "Use this term to check claims." : "Keep this provision in the report. The money checks do not use it."}
+          />
         </div>
       </section>
 

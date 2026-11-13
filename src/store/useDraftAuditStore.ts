@@ -1,8 +1,9 @@
 import { create } from "zustand";
-import { getAnalyzer, type Audit, type ContractTerm } from "@/analyzer";
+import { AiReaderError, createGeminiAnalyzer, getAnalyzer, type AiReadReport, type Analyzer, type Audit, type ContractTerm, type PageText } from "@/analyzer";
 import { categoryLabel } from "@/analyzer/categories";
 import { summarizeFindings } from "@/analyzer/summary";
 import { toast } from "@/components/ui";
+import { AI_READER_AVAILABLE, aiTransport } from "@/lib/aiReader";
 import { AuditStorageError, auditRepo, newAuditId } from "@/lib/auditRepo";
 import {
   CsvCancelledError,
@@ -32,9 +33,18 @@ import { currentSettings } from "@/store/useSettingsStore";
  * to storage. Long jobs (reading the PDF, reading the CSV, running the audit)
  * are started here rather than in components, so they keep going when the user
  * visits another page.
+ *
+ * Who reads the contract is chosen for each audit: the built-in reader, which
+ * works on this device, or the Gemini reader, which sends the contract's page
+ * text to the project's Edge Function and needs the user's agreement each time.
+ * When the Gemini reader fails, the draft says so and waits. It never switches
+ * to the built-in reader by itself.
  */
 
 export type WizardStep = 1 | 2 | 3 | 4;
+
+/** "local": the built-in rules, on this device. "gemini": Google Gemini, through the Edge Function. */
+export type ReaderKind = "local" | "gemini";
 
 export interface ContractState {
   status: "empty" | "reading" | "ready" | "error";
@@ -43,11 +53,20 @@ export interface ContractState {
   /** Size in bytes. Null for the built-in sample. */
   fileSize: number | null;
   pageCount: number;
-  /** While reading: opening the file, reading its pages, then picking out the terms. */
-  stage: "opening" | "pages" | "terms";
+  /** While reading: opening the file, reading its pages, then picking out the terms ("ai" when Gemini is doing that). */
+  stage: "opening" | "pages" | "terms" | "ai";
   pagesDone: number;
   pagesTotal: number;
   error: string | null;
+  /** Who is reading, or has read, this contract. */
+  reader: ReaderKind;
+  /**
+   * Set when the Gemini reader could not read the contract. The page text is still in memory,
+   * so the reading can be tried again or given to the built-in reader, whichever the user picks.
+   */
+  aiFailure: { code: string; retryable: boolean } | null;
+  /** What the Gemini reader left out and added. Null for the built-in reader. */
+  aiReport: AiReadReport | null;
 }
 
 export interface ClaimsState {
@@ -108,14 +127,24 @@ interface DraftAuditState extends DraftFields {
   finishedAuditId: string | null;
   /** True while the New Audit page is on screen. */
   wizardOpen: boolean;
+  /** Who will read the next contract. The built-in reader unless the user picks Gemini. */
+  reader: ReaderKind;
+  /** The user's agreement to send this audit's contract text to Gemini. Asked again for every audit. */
+  aiConsent: boolean;
 
   setWizardOpen: (open: boolean) => void;
+  setReader: (reader: ReaderKind) => void;
+  setAiConsent: (agreed: boolean) => void;
   goToStep: (step: WizardStep) => void;
   nextStep: () => void;
   previousStep: () => void;
 
   loadContract: (file: File) => Promise<void>;
   loadSample: () => Promise<void>;
+  /** After the Gemini reader failed: asks it again, for the pages it has not read yet. */
+  retryAiReading: () => Promise<void>;
+  /** After the Gemini reader failed: reads the same pages with the built-in reader instead. Only ever called by the user. */
+  switchToBuiltInReader: () => Promise<void>;
   cancelContract: () => void;
   /** Removes the contract and its terms. A claims file the user uploaded is kept. */
   removeContract: () => void;
@@ -154,6 +183,9 @@ const EMPTY_CONTRACT: ContractState = {
   pagesDone: 0,
   pagesTotal: 0,
   error: null,
+  reader: "local",
+  aiFailure: null,
+  aiReport: null,
 };
 
 const IDLE_RUN: RunState = { status: "idle", phase: 0, error: null, errorDetail: null };
@@ -210,6 +242,38 @@ let contractJob = 0;
 let claimsJob = 0;
 let runJob = 0;
 
+// ---- Held in memory for the contract in the draft, and nowhere else ----
+
+/** The analyzer that read the draft's terms. The run uses the same one, because the Gemini analyzer remembers what it noticed. */
+let draftAnalyzer: Analyzer | null = null;
+
+interface HeldReading {
+  pages: PageText[];
+  reading: ContractState;
+  after: AfterReading;
+  /** Kept so that trying again only asks for the pages Gemini has not read yet. */
+  gemini: ReturnType<typeof createGeminiAnalyzer> | null;
+}
+
+/** The page text of a contract the Gemini reader is working on or has failed on. Dropped as soon as terms are ready. */
+let heldReading: HeldReading | null = null;
+/** Stops the request to the Gemini reader that is in flight, if there is one. */
+let aiRequest: AbortController | null = null;
+
+function dropContractMemory(): void {
+  aiRequest?.abort();
+  aiRequest = null;
+  heldReading = null;
+  draftAnalyzer = null;
+}
+
+/** What to fill in once the terms have been read. */
+interface AfterReading {
+  auditName: string;
+  /** The sample brings its own claims. */
+  claims?: ClaimsState;
+}
+
 /** Thrown from the page-progress callback to stop pdf.js when a read has been cancelled. */
 class Superseded extends Error {}
 
@@ -254,7 +318,18 @@ export const useDraftAuditStore = create<DraftAuditState>()((set, get) => ({
   finishedAuditId: null,
   wizardOpen: false,
 
+  reader: "local",
+  aiConsent: false,
+
   setWizardOpen: (open) => set({ wizardOpen: open }),
+
+  setReader: (reader) => {
+    if (get().contract.status === "reading" || get().run.status === "running") return;
+    // Agreement is given for one choice of the Gemini reader. Picking it again means agreeing again.
+    set({ reader: AI_READER_AVAILABLE ? reader : "local", aiConsent: false });
+  },
+
+  setAiConsent: (agreed) => set({ aiConsent: agreed }),
 
   goToStep: (step) => {
     if (canOpenStep(get(), step)) set({ step });
@@ -286,53 +361,32 @@ export const useDraftAuditStore = create<DraftAuditState>()((set, get) => ({
       set({ contract: { ...EMPTY_CONTRACT, status: "error", fileName: file.name, error: invalid } });
       return;
     }
+    const reader = chosenReader(get());
+    if (reader === null) {
+      set({ contract: { ...EMPTY_CONTRACT, status: "error", fileName: file.name, error: CONSENT_NEEDED } });
+      return;
+    }
 
     const job = ++contractJob;
+    dropContractMemory();
     const reading: ContractState = {
       ...EMPTY_CONTRACT,
       status: "reading",
       source: "upload",
       fileName: file.name,
       fileSize: file.size,
+      reader,
     };
     set({ ...emptyDraft(), contract: reading, claims: claimsToKeep(get().claims) });
 
     try {
+      // The PDF is always read here, in the browser. Only its text can go on to the Gemini reader.
       const pages = await extractPages(file, (done, total) => {
         if (job !== contractJob) throw new Superseded();
         set({ contract: { ...reading, stage: "pages", pagesDone: done, pagesTotal: total } });
       });
       if (job !== contractJob) return;
-
-      set({ contract: { ...reading, stage: "terms", pagesDone: pages.length, pagesTotal: pages.length } });
-      await pause(0); // let "Finding contract terms" paint before the rules run
-      let terms: ContractTerm[];
-      try {
-        terms = await getAnalyzer().extractTerms(pages);
-      } catch (err) {
-        if (job !== contractJob) return;
-        console.error("ContractSoup could not extract terms", err);
-        set({
-          contract: {
-            ...EMPTY_CONTRACT,
-            status: "error",
-            fileName: file.name,
-            error: "The PDF was read, but its terms could not be picked out. Try again.",
-          },
-        });
-        return;
-      }
-      if (job !== contractJob) return;
-
-      // The page text is not kept: from here on only the extracted terms are needed.
-      set({
-        contract: { ...reading, status: "ready", pageCount: pages.length, pagesDone: pages.length, pagesTotal: pages.length },
-        terms,
-        auditName: defaultAuditName(file.name),
-        step: 2,
-        furthest: 2,
-      });
-      if (!get().wizardOpen) toast.success("Your contract has been read. Open New Audit to review its terms.");
+      await readTerms(job, pages, reading, { auditName: defaultAuditName(file.name) });
     } catch (err) {
       if (err instanceof Superseded || job !== contractJob) return;
       let message = "We could not read this PDF. Try saving it again and re-uploading.";
@@ -346,34 +400,33 @@ export const useDraftAuditStore = create<DraftAuditState>()((set, get) => ({
 
   loadSample: async () => {
     if (get().run.status === "running") return;
+    const reader = chosenReader(get());
+    if (reader === null) {
+      set({ contract: { ...EMPTY_CONTRACT, status: "error", error: CONSENT_NEEDED } });
+      return;
+    }
     const job = ++contractJob;
     claimsJob += 1;
-    set({ ...emptyDraft(), contract: { ...EMPTY_CONTRACT, status: "reading", source: "sample", stage: "terms" } });
+    dropContractMemory();
+    const loading: ContractState = { ...EMPTY_CONTRACT, status: "reading", source: "sample", stage: "terms", reader };
+    set({ ...emptyDraft(), contract: loading });
 
     try {
       const sample = await import("@/data/sample");
-      const extracted = await getAnalyzer().extractTerms(sample.SAMPLE_PAGES);
       if (job !== contractJob) return;
-
-      set({
-        contract: {
-          ...EMPTY_CONTRACT,
-          status: "ready",
-          source: "sample",
-          fileName: sample.SAMPLE_FILE_NAME,
-          pageCount: sample.SAMPLE_PAGES.length,
+      await readTerms(
+        job,
+        sample.SAMPLE_PAGES,
+        { ...loading, fileName: sample.SAMPLE_FILE_NAME },
+        {
+          auditName: defaultAuditName(sample.SAMPLE_FILE_NAME),
+          claims: claimsFromTable(claimsToTable(sample.generateSampleClaims()), {
+            source: "sample",
+            fileName: SAMPLE_CLAIMS_FILE_NAME,
+            fileSize: null,
+          }),
         },
-        // The sample is there to be explored, so its clear terms arrive confirmed. Real uploads never do.
-        terms: extracted.map((t) => ({ ...t, confirmed: t.confidence !== "low" })),
-        claims: claimsFromTable(claimsToTable(sample.generateSampleClaims()), {
-          source: "sample",
-          fileName: SAMPLE_CLAIMS_FILE_NAME,
-          fileSize: null,
-        }),
-        auditName: defaultAuditName(sample.SAMPLE_FILE_NAME),
-        step: 2,
-        furthest: 2,
-      });
+      );
     } catch (err) {
       if (job !== contractJob) return;
       console.error("ContractSoup could not load the sample", err);
@@ -389,16 +442,34 @@ export const useDraftAuditStore = create<DraftAuditState>()((set, get) => ({
     }
   },
 
+  retryAiReading: async () => {
+    const held = heldReading;
+    if (!held || get().contract.aiFailure === null || get().run.status === "running") return;
+    const job = ++contractJob;
+    await readTerms(job, held.pages, { ...held.reading, reader: "gemini" }, held.after, held.gemini);
+  },
+
+  switchToBuiltInReader: async () => {
+    const held = heldReading;
+    if (!held || get().contract.aiFailure === null || get().run.status === "running") return;
+    const job = ++contractJob;
+    // The user asked for this. The contract is read again by the built-in rules, and nothing more is sent anywhere.
+    set({ reader: "local", aiConsent: false });
+    await readTerms(job, held.pages, { ...held.reading, reader: "local" }, held.after);
+  },
+
   cancelContract: () => {
     if (get().contract.status !== "reading") return;
     contractJob += 1;
+    dropContractMemory();
     set({ contract: EMPTY_CONTRACT });
   },
 
   removeContract: () => {
     if (get().run.status === "running") return;
     contractJob += 1;
-    set({ ...emptyDraft(), claims: claimsToKeep(get().claims) });
+    dropContractMemory();
+    set({ ...emptyDraft(), claims: claimsToKeep(get().claims), aiConsent: false });
   },
 
   updateTerm: (id, patch) => set((s) => ({ terms: s.terms.map((t) => (t.id === id ? { ...t, ...patch } : t)) })),
@@ -501,7 +572,8 @@ export const useDraftAuditStore = create<DraftAuditState>()((set, get) => ({
     try {
       // 1. Reading terms: the reviewed terms, exactly as they stand in step 2.
       showPhase(0);
-      const analyzer = getAnalyzer();
+      // The analyzer that read this contract. For the Gemini reader it also holds what Gemini noticed in the wording.
+      const analyzer = draftAnalyzer ?? getAnalyzer();
       const terms = start.terms.map((t) => ({ ...t, label: t.label.trim() || categoryLabel(t.category) }));
       const claims = start.claims.status === "ready" && start.claims.result ? start.claims.result.claims : [];
       await pause(MIN_PHASE_MS);
@@ -531,7 +603,8 @@ export const useDraftAuditStore = create<DraftAuditState>()((set, get) => ({
       const [saved] = await Promise.all([auditRepo.save(audit), pause(MIN_PHASE_MS)]);
       if (job !== runJob) return;
 
-      set({ ...emptyDraft(), finishedAuditId: saved.id });
+      dropContractMemory();
+      set({ ...emptyDraft(), finishedAuditId: saved.id, aiConsent: false });
       if (!get().wizardOpen) toast.success("Your audit is finished and saved. Open New Audit to see the report.");
     } catch (err) {
       if (job !== runJob) return;
@@ -557,9 +630,122 @@ export const useDraftAuditStore = create<DraftAuditState>()((set, get) => ({
     contractJob += 1;
     claimsJob += 1;
     runJob += 1;
-    set({ ...emptyDraft(), finishedAuditId: null });
+    dropContractMemory();
+    set({ ...emptyDraft(), finishedAuditId: null, aiConsent: false });
   },
 }));
+
+const CONSENT_NEEDED = "Tick the box to agree to send this contract's text to Google Gemini, or choose the built-in reader.";
+
+/** The reader to use for a new contract, or null when Gemini is chosen but has not been agreed to. */
+function chosenReader(state: Pick<DraftAuditState, "reader" | "aiConsent">): ReaderKind | null {
+  if (!AI_READER_AVAILABLE || state.reader !== "gemini") return "local";
+  return state.aiConsent ? "gemini" : null;
+}
+
+/**
+ * Picks the terms out of page text with the reader named in `reading`, then fills in the draft.
+ * Used for a first reading, for another try with Gemini, and for the user's switch to the built-in reader.
+ */
+async function readTerms(
+  job: number,
+  pages: PageText[],
+  reading: ContractState,
+  after: AfterReading,
+  earlier: HeldReading["gemini"] = null,
+): Promise<void> {
+  const { getState: get, setState: set } = useDraftAuditStore;
+  const withGemini = reading.reader === "gemini";
+  const total = pages.length;
+  const working: ContractState = {
+    ...reading,
+    status: "reading",
+    stage: withGemini ? "ai" : "terms",
+    pagesDone: withGemini ? 0 : total,
+    pagesTotal: total,
+    error: null,
+    aiFailure: null,
+    aiReport: null,
+  };
+  aiRequest?.abort();
+  aiRequest = null;
+  draftAnalyzer = null;
+  set({ contract: working });
+  await pause(0); // let the progress line paint before the work starts
+  if (job !== contractJob) return;
+
+  let terms: ContractTerm[];
+  let analyzer: Analyzer;
+  let aiReport: AiReadReport | null = null;
+  try {
+    if (withGemini) {
+      const gemini = earlier ?? createGeminiAnalyzer(aiTransport);
+      // The page text is held until Gemini has finished, so a failure can be retried without reading the PDF again.
+      heldReading = { pages, reading, after, gemini };
+      const request = new AbortController();
+      aiRequest = request;
+      terms = await gemini.extractTerms(pages, {
+        signal: request.signal,
+        onProgress: ({ pagesDone, pagesTotal }) => {
+          if (job === contractJob) set({ contract: { ...working, pagesDone, pagesTotal } });
+        },
+      });
+      analyzer = gemini;
+      aiReport = gemini.report;
+    } else {
+      heldReading = null;
+      analyzer = getAnalyzer();
+      terms = await analyzer.extractTerms(pages);
+    }
+  } catch (err) {
+    if (job !== contractJob) return;
+    aiRequest = null;
+    if (err instanceof AiReaderError) {
+      // No silent switch: the draft stops here and says why. The user chooses what happens next.
+      set({
+        contract: {
+          ...EMPTY_CONTRACT,
+          status: "error",
+          fileName: reading.fileName,
+          reader: "gemini",
+          error: err.message,
+          aiFailure: { code: err.code, retryable: err.retryable },
+        },
+      });
+      if (!get().wizardOpen) toast.error("Gemini could not read the contract. Open New Audit to choose what to do.");
+      return;
+    }
+    console.error("ContractSoup could not extract terms", err);
+    heldReading = null;
+    set({
+      contract: {
+        ...EMPTY_CONTRACT,
+        status: "error",
+        fileName: reading.fileName,
+        error: "The contract was read, but its terms could not be picked out. Try again.",
+      },
+    });
+    return;
+  }
+  if (job !== contractJob) return;
+
+  // The page text is not kept: from here on only the extracted terms are needed.
+  heldReading = null;
+  aiRequest = null;
+  draftAnalyzer = analyzer;
+  // The sample is there to be explored, so the built-in reader's clear terms arrive confirmed.
+  // Real uploads never do, and neither does anything Gemini read: a person confirms those, every time.
+  const confirmClearOnes = reading.source === "sample" && !withGemini;
+  set({
+    contract: { ...working, status: "ready", pageCount: total, pagesDone: total, pagesTotal: total, aiReport },
+    terms: confirmClearOnes ? terms.map((t) => ({ ...t, confirmed: t.confidence !== "low" })) : terms,
+    ...(after.claims ? { claims: after.claims } : {}),
+    auditName: after.auditName,
+    step: 2,
+    furthest: 2,
+  });
+  if (!get().wizardOpen && reading.source === "upload") toast.success("Your contract has been read. Open New Audit to review its terms.");
+}
 
 // A draft belongs to whoever was signed in when it was started. Clear it when that person signs out or the account changes.
 useAuthStore.subscribe((state, previous) => {

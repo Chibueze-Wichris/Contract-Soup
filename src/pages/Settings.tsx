@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { ChevronRight, Monitor, Moon, Sun, type LucideIcon } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { AiReaderCard } from "@/components/settings/AiReaderCard";
 import { DataToolsCard } from "@/components/settings/DataToolsCard";
 import { ThresholdsCard } from "@/components/settings/ThresholdsCard";
 import { Badge, Button, Card, CardHeader, Input, Modal, SeverityBadge, SuccessBadge, toast } from "@/components/ui";
 import { useThemeStore, type ThemePreference } from "@/store/useThemeStore";
+import { AI_READER_AVAILABLE } from "@/lib/aiReader";
 import { cn } from "@/lib/cn";
 import { isSupabaseConfigured } from "@/lib/supabase";
 
@@ -14,7 +16,7 @@ const THEME_OPTIONS: { value: ThemePreference; label: string; icon: LucideIcon }
   { value: "dark", label: "Dark", icon: Moon },
 ];
 
-/** Appearance, the check thresholds, tools for the saved reports, and a preview of the base components. */
+/** Appearance, the check thresholds, the Gemini reader (in builds with sign-in), tools for the saved reports, and a preview of the base components. */
 export default function Settings() {
   const preference = useThemeStore((s) => s.preference);
   const setPreference = useThemeStore((s) => s.setPreference);
@@ -60,6 +62,8 @@ export default function Settings() {
         </Card>
 
         <ThresholdsCard />
+
+        {AI_READER_AVAILABLE ? <AiReaderCard /> : null}
 
         <DataToolsCard />
 

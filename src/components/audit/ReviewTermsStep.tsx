@@ -6,12 +6,15 @@ import { TermDrawer } from "./TermDrawer";
 import { TERM_GRID, TermRow } from "./TermRow";
 import { Button, Notice } from "@/components/ui";
 import { cn } from "@/lib/cn";
+import { plural } from "@/lib/format";
+import { awaitsReview } from "@/lib/terms";
 import { useDraftAuditStore } from "@/store/useDraftAuditStore";
 
 /** Step 2: check each term against the contract wording, correct it, and confirm the ones that are right. */
 export function ReviewTermsStep({ focusHeading }: { focusHeading: boolean }) {
   const terms = useDraftAuditStore((s) => s.terms);
   const sample = useDraftAuditStore((s) => s.contract.source === "sample");
+  const withGemini = useDraftAuditStore((s) => s.contract.reader === "gemini");
   const setTermsConfirmed = useDraftAuditStore((s) => s.setTermsConfirmed);
   const nextStep = useDraftAuditStore((s) => s.nextStep);
   const previousStep = useDraftAuditStore((s) => s.previousStep);
@@ -27,7 +30,9 @@ export function ReviewTermsStep({ focusHeading }: { focusHeading: boolean }) {
   }, [removals]);
 
   const confirmedCount = terms.filter((t) => t.confirmed).length;
-  const clearButUnconfirmed = terms.filter((t) => !t.confirmed && t.confidence === "high").map((t) => t.id);
+  // A term flagged for review is never confirmed in bulk, however sure the reader said it was.
+  const clearButUnconfirmed = terms.filter((t) => !t.confirmed && t.confidence === "high" && !t.needsReview).map((t) => t.id);
+  const flagged = terms.filter(awaitsReview).length;
 
   return (
     <StepShell
@@ -35,7 +40,21 @@ export function ReviewTermsStep({ focusHeading }: { focusHeading: boolean }) {
       description="Check each term against the contract wording and correct anything that was read wrongly. Tick Confirmed on the ones that are right. Only confirmed terms are used to check your claims."
       focusHeading={focusHeading}
     >
-      {sample ? (
+      {withGemini ? (
+        <Notice className="mb-5" title={sample ? "This is the sample agreement, read by Gemini" : "Gemini read this contract"}>
+          <p>
+            Nothing is confirmed yet. Each term shows the contract wording it rests on, and that wording has been checked
+            against the PDF. Open a term to compare the two, correct the value if it was read wrongly, and confirm the ones
+            that are right.
+          </p>
+          {flagged > 0 ? (
+            <p className="mt-1">
+              {plural(flagged, "term")} {flagged === 1 ? "is" : "are"} marked Needs review, because Gemini was unsure or an
+              automatic check on the quoted wording failed.
+            </p>
+          ) : null}
+        </Notice>
+      ) : sample ? (
         <Notice className="mb-5">
           This is the sample agreement. Its clearly worded terms are already confirmed, so you can go straight on.
         </Notice>

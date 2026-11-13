@@ -4,6 +4,7 @@ import { RecentAudits } from "@/components/dashboard/RecentAudits";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { EmptyBowl } from "@/components/illustrations/EmptyBowl";
 import { Button, Card, Notice, Skeleton, buttonClasses, toast } from "@/components/ui";
+import { AI_READER_AVAILABLE } from "@/lib/aiReader";
 import { formatCount, formatUsd } from "@/lib/format";
 import { totalReports } from "@/lib/reportList";
 import { STORAGE_TEXT } from "@/lib/storageText";
@@ -110,6 +111,7 @@ export default function Dashboard() {
             <p className="mt-2 max-w-md text-sm text-muted">
               Upload a contract PDF and an optional claims file. ContractSoup reads both in your browser and lists
               anything worth a closer look, with the page and clause as evidence.
+              {AI_READER_AVAILABLE ? " For a deeper reading of the wording, you can have Google Gemini read the contract's text." : ""}
             </p>
             <div className="mt-6 flex flex-wrap justify-center gap-3">
               <Link to="/audit/new" className={buttonClasses("primary", "lg", "gap-2")}>

@@ -16,6 +16,8 @@ interface FileDropzoneProps {
   onFile: (file: File) => void;
   /** Called when a drop cannot be used, for example several files at once. */
   onReject?: (message: string) => void;
+  /** When set, no file is taken, and this is the reason given when one is offered. */
+  blocked?: string;
 }
 
 /** Matches drop targets, so the page can tell a drop on one from a drop that missed. */
@@ -27,7 +29,7 @@ export function carriesFiles(types: readonly string[] | undefined): boolean {
 }
 
 /** Drop target with a button that opens the file picker. The button is the keyboard route; dropping is a shortcut. */
-export function FileDropzone({ accept, title, buttonLabel, hint, icon, onFile, onReject }: FileDropzoneProps) {
+export function FileDropzone({ accept, title, buttonLabel, hint, icon, onFile, onReject, blocked }: FileDropzoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const depth = useRef(0);
   const [over, setOver] = useState(false);
@@ -57,6 +59,10 @@ export function FileDropzone({ accept, title, buttonLabel, hint, icon, onFile, o
     setOver(false);
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
+    if (blocked) {
+      onReject?.(blocked);
+      return;
+    }
     if (files.length > 1) {
       onReject?.("Add one file at a time.");
       return;
@@ -77,10 +83,11 @@ export function FileDropzone({ accept, title, buttonLabel, hint, icon, onFile, o
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
-      onClick={() => inputRef.current?.click()}
+      onClick={() => (blocked ? onReject?.(blocked) : inputRef.current?.click())}
       className={cn(
         "flex cursor-pointer flex-col items-center rounded-xl border-2 border-dashed px-4 py-8 text-center transition-colors duration-150 sm:py-10",
         over ? "border-brand bg-brand-soft" : "border-line-strong bg-surface-2 hover:border-brand",
+        blocked && "opacity-60",
       )}
     >
       {icon ? (

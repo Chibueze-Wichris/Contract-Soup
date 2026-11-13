@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronLeft, ChevronRight, FileText, Table2 } from "lucide-react";
-import type { Finding } from "@/analyzer";
+import type { ContractTerm, Finding } from "@/analyzer";
 import { findingTypeLabel } from "@/analyzer/categories";
-import { Badge, Button, Drawer, Notice, SeverityBadge, Textarea } from "@/components/ui";
+import { AiBadge, Badge, Button, Drawer, NeedsReviewBadge, Notice, SeverityBadge, Textarea } from "@/components/ui";
 import { cn } from "@/lib/cn";
-import { FINDING_STATUSES, evidenceSource, impactText } from "@/lib/findings";
+import { FINDING_STATUSES, awaitsReview, evidenceSource, impactText, isAiFinding, severityLabel } from "@/lib/findings";
+import { describeTermValue, termTitle } from "@/lib/terms";
 import { STORAGE_TEXT } from "@/lib/storageText";
 import type { FindingPatch } from "@/lib/useAudit";
 import { StatusBadge } from "./StatusBadge";
@@ -18,6 +19,8 @@ export interface OpenFinding {
 interface FindingDrawerProps {
   /** Every finding of the audit. */
   findings: readonly Finding[];
+  /** The audit's contract terms, so an observation can name the ones it is about. */
+  terms: readonly ContractTerm[];
   open: OpenFinding | null;
   onNavigate: (findingId: string) => void;
   onClose: () => void;
@@ -78,31 +81,48 @@ function NoteField({ finding, onSave }: { finding: Finding; onSave: (note: strin
 
 interface FindingDetailsProps {
   finding: Finding;
+  /** The contract terms this finding points to. */
+  related: readonly ContractTerm[];
   onUpdate: (findingId: string, patch: FindingPatch) => void;
   /** Why the latest change could not be saved, or null when everything is saved. */
   saveError: string | null;
   onRetrySave: () => void;
 }
 
-function FindingDetails({ finding, onUpdate, saveError, onRetrySave }: FindingDetailsProps) {
+function FindingDetails({ finding, related, onUpdate, saveError, onRetrySave }: FindingDetailsProps) {
   const dismissed = finding.status === "dismissed";
+  const fromAi = isAiFinding(finding);
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
         <SeverityBadge severity={finding.severity} />
-        <Badge>{findingTypeLabel(finding.type)}</Badge>
+        {fromAi ? <AiBadge>AI reading</AiBadge> : null}
+        {awaitsReview(finding) ? <NeedsReviewBadge /> : null}
+        <Badge className="whitespace-normal">{findingTypeLabel(finding.type)}</Badge>
         <StatusBadge status={finding.status} />
       </div>
 
-      <dl className="mt-4 rounded-lg border border-line bg-surface-2 px-4 py-3">
-        <dt className="text-xs text-muted">Estimated impact</dt>
-        <dd className="num mt-0.5 text-2xl font-semibold text-ink">{impactText(finding)}</dd>
-        {dismissed && finding.estimatedImpactUSD !== null ? (
-          <dd className="mt-1 text-xs text-muted">Dismissed, so it is not counted in the report totals.</dd>
-        ) : null}
-      </dl>
+      {fromAi ? (
+        <Notice className="mt-4" title="An observation from Gemini's reading of the contract">
+          <p>
+            It is about the wording quoted below, not about your claims, so it has no dollar estimate and adds nothing
+            to the report totals. The severity is Gemini&rsquo;s judgement
+            {finding.confidence ? `, given with ${severityLabel(finding.confidence).toLowerCase()} confidence` : ""}. Read the
+            quoted wording and decide for yourself. It is not legal advice.
+          </p>
+          {finding.needsReview ? <p className="mt-1">Gemini was not sure about this one.</p> : null}
+        </Notice>
+      ) : (
+        <dl className="mt-4 rounded-lg border border-line bg-surface-2 px-4 py-3">
+          <dt className="text-xs text-muted">Estimated impact</dt>
+          <dd className="num mt-0.5 text-2xl font-semibold text-ink">{impactText(finding)}</dd>
+          {dismissed && finding.estimatedImpactUSD !== null ? (
+            <dd className="mt-1 text-xs text-muted">Dismissed, so it is not counted in the report totals.</dd>
+          ) : null}
+        </dl>
+      )}
 
-      <Section title="What was found">
+      <Section title={fromAi ? "What Gemini noticed" : "What was found"}>
         <p className="break-words text-ink">{finding.explanation}</p>
       </Section>
 
@@ -123,6 +143,25 @@ function FindingDetails({ finding, onUpdate, saveError, onRetrySave }: FindingDe
                 </li>
               );
             })}
+          </ul>
+          {fromAi ? (
+            <p className="mt-2 text-xs text-muted">Checked: each quotation is on the stated page of the contract.</p>
+          ) : null}
+        </Section>
+      ) : null}
+
+      {related.length > 0 ? (
+        <Section title="Contract terms this is about">
+          <ul className="divide-y divide-line rounded-lg border border-line">
+            {related.map((t) => (
+              <li key={t.id} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 px-3 py-2">
+                <span className="min-w-0 break-words text-ink">{termTitle(t)}</span>
+                <span className="num text-xs text-muted">
+                  {describeTermValue(t)} · page {t.pageRef}
+                  {t.confirmed ? "" : " · not confirmed"}
+                </span>
+              </li>
+            ))}
           </ul>
         </Section>
       ) : null}
@@ -190,7 +229,7 @@ function FindingDetails({ finding, onUpdate, saveError, onRetrySave }: FindingDe
 }
 
 /** Side panel for one finding: what was found, the evidence, how the number was worked out, and the reviewer's decision. */
-export function FindingDrawer({ findings, open, onNavigate, onClose, onUpdate, saveError, onRetrySave }: FindingDrawerProps) {
+export function FindingDrawer({ findings, terms, open, onNavigate, onClose, onUpdate, saveError, onRetrySave }: FindingDrawerProps) {
   const finding = open ? (findings.find((f) => f.id === open.id) ?? null) : null;
   const order = open?.order ?? [];
   const index = open ? order.indexOf(open.id) : -1;
@@ -237,7 +276,14 @@ export function FindingDrawer({ findings, open, onNavigate, onClose, onUpdate, s
           <p className="sr-only" aria-live="polite">
             {position}: {finding.title}
           </p>
-          <FindingDetails key={finding.id} finding={finding} onUpdate={onUpdate} saveError={saveError} onRetrySave={onRetrySave} />
+          <FindingDetails
+            key={finding.id}
+            finding={finding}
+            related={(finding.relatedTermIds ?? []).flatMap((id) => terms.filter((t) => t.id === id))}
+            onUpdate={onUpdate}
+            saveError={saveError}
+            onRetrySave={onRetrySave}
+          />
         </>
       ) : null}
     </Drawer>

@@ -3,10 +3,12 @@ import { SearchX } from "lucide-react";
 import type { Audit } from "@/analyzer";
 import { Button, Card, Select } from "@/components/ui";
 import {
+  FINDING_SOURCES,
   FINDING_STATUSES,
   NO_FILTER,
   SEVERITIES,
   countBySeverity,
+  countBySource,
   countByStatus,
   filterFindings,
   sortFindings,
@@ -37,7 +39,8 @@ export function FindingsSection({ audit, onUpdate, saveError, onRetrySave }: Fin
   const visible = useMemo(() => sortFindings(filterFindings(findings, filter), sort), [findings, filter, sort]);
   const byStatus = countByStatus(findings);
   const bySeverity = countBySeverity(findings);
-  const filtered = filter.status !== "all" || filter.severity !== "all";
+  const bySource = countBySource(findings);
+  const filtered = filter.status !== "all" || filter.severity !== "all" || filter.source !== "all";
 
   return (
     <section aria-labelledby={headingId}>
@@ -50,7 +53,9 @@ export function FindingsSection({ audit, onUpdate, saveError, onRetrySave }: Fin
             <p className="mt-1 text-sm text-muted" role="status">
               {filtered
                 ? `Showing ${formatCount(visible.length)} of ${plural(findings.length, "finding")}.`
-                : `${plural(findings.length, "finding")}. Open one to see its evidence and how its number was worked out.`}
+                : bySource.ai === 0
+                  ? `${plural(findings.length, "finding")}. Open one to see its evidence and how its number was worked out.`
+                  : `${plural(findings.length, "finding")}: ${formatCount(bySource.checks)} from the money checks and ${formatCount(bySource.ai)} from Gemini's reading of the wording, which carry no estimate.`}
             </p>
           </div>
           <div className="grid shrink-0 grid-cols-2 gap-3 sm:flex sm:items-end">
@@ -80,6 +85,21 @@ export function FindingsSection({ audit, onUpdate, saveError, onRetrySave }: Fin
                 </option>
               ))}
             </Select>
+            {bySource.ai > 0 ? (
+              <Select
+                label="Source"
+                className="col-span-2 sm:w-44"
+                value={filter.source}
+                onChange={(e) => setFilter({ ...filter, source: e.target.value as FindingFilter["source"] })}
+              >
+                <option value="all">All ({formatCount(findings.length)})</option>
+                {FINDING_SOURCES.map((s) => (
+                  <option key={s.value} value={s.value}>
+                    {s.label} ({formatCount(bySource[s.value])})
+                  </option>
+                ))}
+              </Select>
+            ) : null}
             <Select
               label="Sort by"
               className="col-span-2 sm:w-48"
@@ -115,6 +135,7 @@ export function FindingsSection({ audit, onUpdate, saveError, onRetrySave }: Fin
 
       <FindingDrawer
         findings={findings}
+        terms={audit.terms}
         open={open}
         onNavigate={(id) => setOpen((current) => (current ? { ...current, id } : current))}
         onClose={() => setOpen(null)}

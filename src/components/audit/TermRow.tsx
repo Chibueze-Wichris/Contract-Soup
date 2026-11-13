@@ -1,11 +1,12 @@
 import { memo } from "react";
 import { FileSearch } from "lucide-react";
 import type { ContractTerm } from "@/analyzer";
+import { categoryLabel, isMoneyCategory } from "@/analyzer/categories";
 import { ConfidenceBadge } from "./ConfidenceBadge";
 import { ConfirmBox, UnitOptions, useTermValueField } from "./TermFields";
-import { Button, Input, Select } from "@/components/ui";
+import { AiBadge, Button, Input, NeedsReviewBadge, Select } from "@/components/ui";
 import { cn } from "@/lib/cn";
-import { termTitle } from "@/lib/terms";
+import { awaitsReview, isAiTerm, termTitle } from "@/lib/terms";
 import { useDraftAuditStore } from "@/store/useDraftAuditStore";
 
 /** Column layout shared by the list heading and every row once the list is wide enough (40rem). */
@@ -22,12 +23,24 @@ export const TermRow = memo(function TermRow({ term, onOpen }: TermRowProps) {
   const updateTerm = useDraftAuditStore((s) => s.updateTerm);
   const valueField = useTermValueField(term);
   const title = termTitle(term);
+  const kind = categoryLabel(term.category);
 
   return (
     <li className={cn("grid gap-y-3 py-4 @[40rem]:items-center @[40rem]:py-3", TERM_GRID)}>
       <div className="min-w-0">
         <p className="break-words text-sm font-medium text-ink">{title}</p>
-        <ConfidenceBadge term={term} className="mt-1" />
+        {/* The AI reader names a term as the contract does, so its kind is worth showing beside the name. */}
+        {isAiTerm(term) && kind !== title ? (
+          <p className="mt-0.5 break-words text-xs text-muted">
+            {kind}
+            {isMoneyCategory(term.category) ? "" : ". Not used by the money checks."}
+          </p>
+        ) : null}
+        <div className="mt-1 flex flex-wrap gap-1">
+          <ConfidenceBadge term={term} />
+          {isAiTerm(term) ? <AiBadge /> : null}
+          {awaitsReview(term) ? <NeedsReviewBadge /> : null}
+        </div>
       </div>
 
       <div className="grid grid-cols-[2fr_3fr] gap-3 @[40rem]:contents">

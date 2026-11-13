@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { CheckCircle2, Circle, Loader2, Play } from "lucide-react";
 import { StepFooter, StepShell } from "./StepShell";
 import { Button, Input, Notice, ProgressBar } from "@/components/ui";
+import { isMoneyCategory } from "@/analyzer/categories";
 import { STORAGE_PLACE } from "@/lib/auditRepo";
 import { cn } from "@/lib/cn";
 import { plural } from "@/lib/format";
@@ -40,6 +41,7 @@ export function RunStep({ focusHeading }: { focusHeading: boolean }) {
   const contract = useDraftAuditStore((s) => s.contract);
   const termCount = useDraftAuditStore((s) => s.terms.length);
   const confirmedCount = useDraftAuditStore((s) => s.terms.filter((t) => t.confirmed).length);
+  const confirmedMoneyCount = useDraftAuditStore((s) => s.terms.filter((t) => t.confirmed && isMoneyCategory(t.category)).length);
   const claims = useDraftAuditStore((s) => s.claims);
   const auditName = useDraftAuditStore((s) => s.auditName);
   const run = useDraftAuditStore((s) => s.run);
@@ -52,6 +54,8 @@ export function RunStep({ focusHeading }: { focusHeading: boolean }) {
   const navigate = useNavigate();
 
   const running = run.status === "running";
+  const withGemini = contract.reader === "gemini";
+  const observations = contract.aiReport?.observations ?? 0;
   const result = claims.status === "ready" ? claims.result : null;
   const claimCount = result?.claims.length ?? 0;
   const open = (step: WizardStep) => (running ? undefined : () => goToStep(step));
@@ -59,7 +63,11 @@ export function RunStep({ focusHeading }: { focusHeading: boolean }) {
   return (
     <StepShell
       title="Run audit"
-      description="Check what will be used, then run the audit. Everything is worked out here in your browser."
+      description={
+        withGemini
+          ? "Check what will be used, then run the audit. The money checks are worked out here in your browser. Nothing more is sent to Gemini."
+          : "Check what will be used, then run the audit. Everything is worked out here in your browser."
+      }
       focusHeading={focusHeading}
       view={run.status}
     >
@@ -78,12 +86,28 @@ export function RunStep({ focusHeading }: { focusHeading: boolean }) {
         <SummaryRow label="Contract" action="Change" onAction={open(1)}>
           <span className="break-words font-medium [overflow-wrap:anywhere]">{contract.fileName}</span>
           <span className="num block text-muted">{plural(contract.pageCount, "page")}</span>
+          {withGemini ? (
+            <span className="block text-muted">
+              Read by Google Gemini{contract.aiReport?.model ? ` (${contract.aiReport.model})` : ""}. The text of its pages was
+              sent to Gemini for that.
+            </span>
+          ) : null}
         </SummaryRow>
         <SummaryRow label="Contract terms" action="Review" onAction={open(2)}>
           <span className="num font-medium">
             {confirmedCount} of {termCount} confirmed
           </span>
           <span className="block text-muted">Only confirmed terms are used.</span>
+          {withGemini ? (
+            <span className="block text-muted">
+              {confirmedMoneyCount === 0
+                ? "None of the confirmed terms is a financial term, so the money checks have nothing to compare claims with."
+                : `${plural(confirmedMoneyCount, "confirmed financial term")} will be used by the money checks.`}
+              {observations > 0
+                ? ` ${plural(observations, "observation")} Gemini made about the wording will be listed separately, with no dollar estimate.`
+                : ""}
+            </span>
+          ) : null}
         </SummaryRow>
         <SummaryRow label="Claims" action={result ? "Change" : "Add"} onAction={open(3)}>
           {result ? (
@@ -112,6 +136,7 @@ export function RunStep({ focusHeading }: { focusHeading: boolean }) {
               <span className="block text-muted">
                 Only the report is saved there: the contract terms with their short excerpts, the findings and the
                 totals. Your contract and claims files are not uploaded.
+                {withGemini ? " The page text that was sent to Gemini is not kept." : ""}
               </span>
             </>
           ) : (

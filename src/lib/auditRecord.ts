@@ -28,6 +28,33 @@ export function copyName(name: string): string {
   return cleanAuditName(`Copy of ${name}`);
 }
 
+/** The fields the AI reader adds to a term. Only the ones that are set are copied. */
+function copyTermExtras(t: ContractTerm): Partial<ContractTerm> {
+  return {
+    ...(t.origin !== undefined ? { origin: t.origin } : {}),
+    ...(t.summary !== undefined ? { summary: t.summary } : {}),
+    ...(t.conditions !== undefined ? { conditions: [...t.conditions] } : {}),
+    ...(t.exceptions !== undefined ? { exceptions: [...t.exceptions] } : {}),
+    ...(t.effectiveDate !== undefined ? { effectiveDate: t.effectiveDate } : {}),
+    ...(t.expirationDate !== undefined ? { expirationDate: t.expirationDate } : {}),
+    ...(t.noticePeriod !== undefined ? { noticePeriod: { value: t.noticePeriod.value, unit: t.noticePeriod.unit } } : {}),
+    ...(t.relatedClauses !== undefined ? { relatedClauses: [...t.relatedClauses] } : {}),
+    ...(t.relatedTermIds !== undefined ? { relatedTermIds: [...t.relatedTermIds] } : {}),
+    ...(t.needsReview !== undefined ? { needsReview: t.needsReview } : {}),
+    ...(t.reviewReasons !== undefined ? { reviewReasons: [...t.reviewReasons] } : {}),
+  };
+}
+
+/** The fields that mark a finding as an observation from the AI reader. */
+function copyFindingExtras(f: Finding): Partial<Finding> {
+  return {
+    ...(f.origin !== undefined ? { origin: f.origin } : {}),
+    ...(f.confidence !== undefined ? { confidence: f.confidence } : {}),
+    ...(f.needsReview !== undefined ? { needsReview: f.needsReview } : {}),
+    ...(f.relatedTermIds !== undefined ? { relatedTermIds: [...f.relatedTermIds] } : {}),
+  };
+}
+
 /**
  * Copies only the fields an Audit is allowed to have. Anything else that may
  * have been attached to the object (page text, claim rows) is left behind.
@@ -51,6 +78,7 @@ export function toRecord(a: Audit): Audit {
       confidence: t.confidence,
       confirmed: t.confirmed,
       ...(t.match !== undefined ? { match: t.match } : {}),
+      ...copyTermExtras(t),
     })),
     findings: a.findings.map((f) => ({
       id: f.id,
@@ -63,6 +91,7 @@ export function toRecord(a: Audit): Audit {
       ...(f.calc !== undefined ? { calc: f.calc } : {}),
       status: f.status,
       ...(f.note !== undefined ? { note: f.note } : {}),
+      ...copyFindingExtras(f),
     })),
     summary: {
       exposureUSD: a.summary.exposureUSD,
@@ -91,6 +120,72 @@ const isText = (v: unknown, max: number): v is string => typeof v === "string" &
 const isCount = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 1e9;
 const isAmount = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const oneOf = <T extends string>(v: unknown, allowed: readonly T[]): v is T => allowed.includes(v as T);
+const isTextList = (v: unknown, maxItems: number, maxLength: number): v is string[] =>
+  Array.isArray(v) && v.length <= maxItems && v.every((item) => isText(item, maxLength));
+const isIsoDate = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+
+const MAX_POINTS = 100;
+const NOTICE_UNITS = ["days", "months", "years"] as const;
+
+/**
+ * Reads the optional fields the AI reader adds to a term. Returns null when one of them is
+ * present but has the wrong shape. Records saved before these fields existed have none of them.
+ */
+function parseTermExtras(v: Loose): Partial<ContractTerm> | null {
+  const out: Partial<ContractTerm> = {};
+  if (v.origin !== undefined) {
+    if (v.origin !== "ai") return null;
+    out.origin = "ai";
+  }
+  if (v.summary !== undefined) {
+    if (!isText(v.summary, LONG_TEXT)) return null;
+    out.summary = v.summary;
+  }
+  for (const key of ["conditions", "exceptions", "relatedClauses", "relatedTermIds", "reviewReasons"] as const) {
+    const list = v[key];
+    if (list === undefined) continue;
+    if (!isTextList(list, MAX_POINTS, LONG_TEXT)) return null;
+    out[key] = [...list];
+  }
+  for (const key of ["effectiveDate", "expirationDate"] as const) {
+    const date = v[key];
+    if (date === undefined) continue;
+    if (!isIsoDate(date)) return null;
+    out[key] = date;
+  }
+  if (v.noticePeriod !== undefined) {
+    const n = v.noticePeriod;
+    if (!isObject(n) || !isAmount(n.value) || n.value <= 0 || !oneOf(n.unit, NOTICE_UNITS)) return null;
+    out.noticePeriod = { value: n.value, unit: n.unit };
+  }
+  if (v.needsReview !== undefined) {
+    if (typeof v.needsReview !== "boolean") return null;
+    out.needsReview = v.needsReview;
+  }
+  return out;
+}
+
+/** Reads the optional fields that mark a finding as an observation from the AI reader. Null when one is malformed. */
+function parseFindingExtras(v: Loose): Partial<Finding> | null {
+  const out: Partial<Finding> = {};
+  if (v.origin !== undefined) {
+    if (v.origin !== "ai") return null;
+    out.origin = "ai";
+  }
+  if (v.confidence !== undefined) {
+    if (!oneOf(v.confidence, LEVELS)) return null;
+    out.confidence = v.confidence;
+  }
+  if (v.needsReview !== undefined) {
+    if (typeof v.needsReview !== "boolean") return null;
+    out.needsReview = v.needsReview;
+  }
+  if (v.relatedTermIds !== undefined) {
+    if (!isTextList(v.relatedTermIds, MAX_POINTS, SHORT_TEXT)) return null;
+    out.relatedTermIds = [...v.relatedTermIds];
+  }
+  return out;
+}
 
 function parseTerm(v: unknown): ContractTerm | null {
   if (!isObject(v)) return null;
@@ -109,6 +204,8 @@ function parseTerm(v: unknown): ContractTerm | null {
   ) {
     return null;
   }
+  const extras = parseTermExtras(v);
+  if (extras === null) return null;
   return {
     id: v.id,
     category: v.category,
@@ -120,6 +217,7 @@ function parseTerm(v: unknown): ContractTerm | null {
     confidence: v.confidence,
     confirmed: v.confirmed,
     ...(v.match !== undefined ? { match: v.match } : {}),
+    ...extras,
   };
 }
 
@@ -145,6 +243,10 @@ function parseFinding(v: unknown): Finding | null {
     if (!isObject(e) || !isCount(e.page) || !isText(e.snippet, LONG_TEXT)) return null;
     evidence.push({ page: e.page, snippet: e.snippet });
   }
+  const extras = parseFindingExtras(v);
+  if (extras === null) return null;
+  // An observation from the AI reader never carries an amount. One that claims to is not a record this app wrote.
+  if (extras.origin === "ai" && v.estimatedImpactUSD !== null) return null;
   return {
     id: v.id,
     severity: v.severity,
@@ -156,6 +258,7 @@ function parseFinding(v: unknown): Finding | null {
     ...(v.calc !== undefined ? { calc: v.calc } : {}),
     status: v.status,
     ...(v.note !== undefined ? { note: v.note } : {}),
+    ...extras,
   };
 }
 

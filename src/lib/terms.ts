@@ -15,6 +15,8 @@ export const TERM_UNITS: readonly { value: string; label: string }[] = [
   { value: "USD", label: "USD" },
   { value: "%", label: "%" },
   { value: "days", label: "days" },
+  { value: "months", label: "months" },
+  { value: "years", label: "years" },
   { value: "", label: "No unit" },
 ];
 
@@ -69,6 +71,47 @@ export function describeTermValue(term: Pick<ContractTerm, "value" | "unit">): s
 /** The name to show for a term: its own label, or its category when the label was left empty. */
 export function termTitle(term: Pick<ContractTerm, "label" | "category">): string {
   return term.label.trim() || categoryLabel(term.category);
+}
+
+/** Terms the AI reader found, as opposed to the built-in rules or the user. */
+export function isAiTerm(term: Pick<ContractTerm, "origin">): boolean {
+  return term.origin === "ai";
+}
+
+/** True while a term the AI reader flagged is still waiting for a person to confirm it. */
+export function awaitsReview(term: Pick<ContractTerm, "needsReview" | "confirmed">): boolean {
+  return term.needsReview === true && !term.confirmed;
+}
+
+/** "90 days", "1 year". */
+export function describeNoticePeriod(notice: NonNullable<ContractTerm["noticePeriod"]>): string {
+  const value = notice.value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  return `${value} ${notice.value === 1 ? notice.unit.replace(/s$/, "") : notice.unit}`;
+}
+
+/** "2025-01-01" -> "January 1, 2025". The date is a calendar date, so no time zone is applied. */
+export function describeIsoDate(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return iso;
+  const date = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return date.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
+}
+
+/**
+ * What the AI reader understood about a term, as short lines for the report and the PDF:
+ * its meaning, when it applies, what it leaves out, its dates, its notice period and what it points to.
+ * Empty for terms from the built-in reader and for terms typed in by hand.
+ */
+export function termNotes(term: ContractTerm): string[] {
+  const notes: string[] = [];
+  if (term.summary) notes.push(term.summary);
+  if (term.conditions?.length) notes.push(`Applies when: ${term.conditions.join("; ")}`);
+  if (term.exceptions?.length) notes.push(`Does not apply to: ${term.exceptions.join("; ")}`);
+  if (term.effectiveDate) notes.push(`Effective ${describeIsoDate(term.effectiveDate)}`);
+  if (term.expirationDate) notes.push(`Expires ${describeIsoDate(term.expirationDate)}`);
+  if (term.noticePeriod) notes.push(`Notice period: ${describeNoticePeriod(term.noticePeriod)}`);
+  if (term.relatedClauses?.length) notes.push(`See also: ${term.relatedClauses.join(", ")}`);
+  return notes;
 }
 
 const MANUAL_PREFIX = "manual-";

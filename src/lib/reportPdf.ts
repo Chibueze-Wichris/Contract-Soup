@@ -1,25 +1,44 @@
 import type { jsPDF } from "jspdf";
 import type { UserOptions } from "jspdf-autotable";
 import type { Audit } from "@/analyzer";
-import { findingTypeLabel } from "@/analyzer/categories";
+import { categoryLabel, findingTypeLabel, isMoneyCategory } from "@/analyzer/categories";
+import { geminiName, usedGemini } from "@/lib/analyzerText";
 import {
   FINDING_STATUSES,
   SEVERITIES,
   countByStatus,
   evidenceSource,
   impactText,
+  isAiFinding,
   severityLabel,
   sortFindings,
   statusLabel,
 } from "@/lib/findings";
 import { formatCount, formatDateTime, formatUsd, plural } from "@/lib/format";
 import { DISCLAIMER } from "@/lib/nav";
-import { describeTermValue, termTitle } from "@/lib/terms";
+import { describeTermValue, isAiTerm, termNotes, termTitle } from "@/lib/terms";
 
 /**
  * The audit report as a PDF. It is built in the browser from the saved audit, so
  * nothing is sent anywhere. jsPDF and its table plugin are loaded on first use.
+ *
+ * When Gemini read the contract, the report says so on its first page, marks every
+ * finding that came from that reading, and never prints a dollar figure for one.
  */
+
+/** Printed under the disclaimer of a report whose contract was read by Gemini. */
+export function aiDisclosure(audit: Audit): string {
+  const observations = audit.findings.filter(isAiFinding).length;
+  return [
+    `The contract was read by ${geminiName(audit)}. The contract terms it found were confirmed by a person before the money checks used them.`,
+    observations > 0
+      ? `${plural(observations, "finding")} marked "AI reading" ${observations === 1 ? "is an observation" : "are observations"} Gemini made about the contract's wording. ${observations === 1 ? "It has" : "They have"} no dollar estimate and ${observations === 1 ? "is" : "are"} not part of the estimated exposure.`
+      : "",
+    "Everything Gemini reported quotes the contract, and each quotation was checked against the PDF. An AI reading can still be wrong or incomplete.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
 
 type AutoTable = (doc: jsPDF, options: UserOptions) => void;
 type Rgb = [number, number, number];
@@ -131,6 +150,13 @@ export function buildReportPdf(audit: Audit, JsPdf: typeof jsPDF, autoTable: Aut
   const byStatus = countByStatus(findings);
   const usedTerms = audit.terms.filter((t) => t.confirmed);
   const unusedTerms = audit.terms.filter((t) => !t.confirmed);
+  const withGemini = usedGemini(audit);
+  const anyAiTerms = audit.terms.some(isAiTerm);
+  const observations = counted.filter(isAiFinding).length;
+  const fromChecks = counted.length - observations;
+  /** "AI reading: One-sided term" for what Gemini noticed, the plain type for a money check. */
+  const typeText = (f: (typeof findings)[number]): string =>
+    isAiFinding(f) ? `AI reading: ${findingTypeLabel(f.type)}` : findingTypeLabel(f.type);
 
   // ---- Title and disclaimer ----
   write("ContractSoup audit report", { size: 9, style: "bold", color: BRAND, gap: 3 });
@@ -148,6 +174,10 @@ export function buildReportPdf(audit: Audit, JsPdf: typeof jsPDF, autoTable: Aut
   disclaimerLines.forEach((line, i) => doc.text(line, left + 12, y + 9 + i * 13.5, { baseline: "top" }));
   y += boxHeight + 14;
 
+  if (withGemini) {
+    write(aiDisclosure(audit), { size: 9, color: MUTED, gap: 12 });
+  }
+
   // ---- Facts ----
   autoTable(doc, {
     ...tableDefaults,
@@ -158,8 +188,21 @@ export function buildReportPdf(audit: Audit, JsPdf: typeof jsPDF, autoTable: Aut
     body: [
       ["Contract", `${pdfText(audit.contractFileName)} (${plural(audit.pageCount, "page")})`],
       ["Claims checked", audit.claimsCount > 0 ? formatCount(audit.claimsCount) : "None. The audit ran without a claims file."],
-      ["Contract terms used", `${formatCount(usedTerms.length)} confirmed, of ${formatCount(audit.terms.length)} found in the contract`],
-      ["Estimated exposure", `${formatUsd(audit.summary.exposureUSD)} across ${plural(counted.length, "finding")}`],
+      ...(withGemini ? [["Contract read by", pdfText(`${geminiName(audit)}. Its terms were confirmed by a person.`)]] : []),
+      [
+        "Contract terms used",
+        `${formatCount(usedTerms.length)} confirmed, of ${formatCount(audit.terms.length)} found in the contract` +
+          (anyAiTerms ? `. The money checks used the ${plural(usedTerms.filter((t) => isMoneyCategory(t.category)).length, "financial term")} among them.` : ""),
+      ],
+      [
+        "Estimated exposure",
+        observations > 0
+          ? `${formatUsd(audit.summary.exposureUSD)} from ${plural(fromChecks, "finding")} of the money checks`
+          : `${formatUsd(audit.summary.exposureUSD)} across ${plural(counted.length, "finding")}`,
+      ],
+      ...(observations > 0
+        ? [["AI reading", `${plural(observations, "observation")} about the wording. No dollar estimate, and not part of the exposure.`]]
+        : []),
       ["Findings by severity", SEVERITIES.map((s) => `${s.label} ${audit.summary.bySeverity[s.value] ?? 0}`).join(", ")],
       ["Review status", FINDING_STATUSES.map((s) => `${s.label} ${byStatus[s.value]}`).join(", ")],
       ["Analyzer", pdfText(audit.analyzerVersion)],
@@ -184,7 +227,7 @@ export function buildReportPdf(audit: Audit, JsPdf: typeof jsPDF, autoTable: Aut
       body: findings.map((f, i) => [
         String(i + 1),
         severityLabel(f.severity),
-        pdfText(findingTypeLabel(f.type)),
+        pdfText(typeText(f)),
         pdfText(f.title),
         statusLabel(f.status),
         impactText(f),
@@ -208,16 +251,27 @@ export function buildReportPdf(audit: Audit, JsPdf: typeof jsPDF, autoTable: Aut
   findings.forEach((f, i) => {
     ensure(96);
     write(`${i + 1}. ${f.title}`, { size: 12, style: "bold", gap: 2 });
+    const fromAi = isAiFinding(f);
     write(
-      `${severityLabel(f.severity)} severity \u00B7 ${findingTypeLabel(f.type)} \u00B7 ${statusLabel(f.status)} \u00B7 Estimated impact: ${impactText(f)}`,
+      fromAi
+        ? `${severityLabel(f.severity)} severity, as judged by Gemini${f.confidence ? ` with ${severityLabel(f.confidence).toLowerCase()} confidence` : ""} \u00B7 ${typeText(f)} \u00B7 ${statusLabel(f.status)} \u00B7 No dollar estimate`
+        : `${severityLabel(f.severity)} severity \u00B7 ${typeText(f)} \u00B7 ${statusLabel(f.status)} \u00B7 Estimated impact: ${impactText(f)}`,
       { size: 9, color: MUTED, gap: 7 },
     );
-    label("What was found");
+    label(fromAi ? "What Gemini noticed" : "What was found");
     write(f.explanation, { gap: 7 });
     if (f.evidence.length > 0) {
-      label("Evidence");
+      label(fromAi ? "Contract wording it rests on" : "Evidence");
       for (const e of f.evidence) write(`${evidenceSource(e.page)}: ${e.snippet}`, { size: 9, indent: 10, gap: 3 });
       y += 4;
+    }
+    const about = (f.relatedTermIds ?? []).flatMap((id) => audit.terms.filter((t) => t.id === id));
+    if (about.length > 0) {
+      label("Contract terms this is about");
+      for (const t of about) {
+        write(`${termTitle(t)}: ${describeTermValue(t)} (page ${t.pageRef}${t.confirmed ? "" : ", not confirmed"})`, { size: 9, indent: 10, gap: 1 });
+      }
+      y += 6;
     }
     if (f.calc) {
       label("How this was worked out");
@@ -239,7 +293,17 @@ export function buildReportPdf(audit: Audit, JsPdf: typeof jsPDF, autoTable: Aut
         ...tableDefaults,
         startY: y,
         head: [["Term", "Value", "Contract page"]],
-        body: usedTerms.map((t) => [pdfText(termTitle(t)), pdfText(describeTermValue(t)), String(t.pageRef)]),
+        body: usedTerms.map((t) => [
+          // For a term Gemini read: its kind, then what Gemini understood, each on a line of its own.
+          pdfText(
+            [
+              isAiTerm(t) && categoryLabel(t.category) !== termTitle(t) ? `${termTitle(t)} (${categoryLabel(t.category)})` : termTitle(t),
+              ...termNotes(t),
+            ].join("\n"),
+          ),
+          pdfText(describeTermValue(t)),
+          String(t.pageRef),
+        ]),
         columnStyles: { 1: { cellWidth: 150 }, 2: { cellWidth: 80, halign: "right" } },
       });
       y = afterTable() + 8;

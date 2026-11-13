@@ -37,6 +37,34 @@ export function evidenceSource(page: number): string {
   return page > 0 ? `Contract, page ${page}` : "Claims file";
 }
 
+/** True for an observation the AI reader made about the contract wording, as opposed to a result of the money checks. */
+export function isAiFinding(finding: Pick<Finding, "origin">): boolean {
+  return finding.origin === "ai";
+}
+
+/** True while an observation the AI reader was unsure of has not been reviewed. */
+export function awaitsReview(finding: Pick<Finding, "needsReview" | "status">): boolean {
+  return finding.needsReview === true && finding.status === "open";
+}
+
+/** Where a finding comes from: the arithmetic on the claims, or Gemini's reading of the contract. */
+export type FindingSource = "checks" | "ai";
+
+export const FINDING_SOURCES: readonly { value: FindingSource; label: string }[] = [
+  { value: "checks", label: "Money checks" },
+  { value: "ai", label: "AI reading" },
+];
+
+export function findingSource(finding: Pick<Finding, "origin">): FindingSource {
+  return isAiFinding(finding) ? "ai" : "checks";
+}
+
+export function countBySource(findings: readonly Finding[]): Record<FindingSource, number> {
+  const counts: Record<FindingSource, number> = { checks: 0, ai: 0 };
+  for (const f of findings) counts[findingSource(f)] += 1;
+  return counts;
+}
+
 export type FindingSort = "severity" | "impact";
 
 const SEVERITY_RANK: Record<Severity, number> = { high: 0, medium: 1, low: 2 };
@@ -53,13 +81,17 @@ export function sortFindings(findings: readonly Finding[], sort: FindingSort): F
 export interface FindingFilter {
   status: FindingStatus | "all";
   severity: Severity | "all";
+  source: FindingSource | "all";
 }
 
-export const NO_FILTER: FindingFilter = { status: "all", severity: "all" };
+export const NO_FILTER: FindingFilter = { status: "all", severity: "all", source: "all" };
 
 export function filterFindings(findings: readonly Finding[], filter: FindingFilter): Finding[] {
   return findings.filter(
-    (f) => (filter.status === "all" || f.status === filter.status) && (filter.severity === "all" || f.severity === filter.severity),
+    (f) =>
+      (filter.status === "all" || f.status === filter.status) &&
+      (filter.severity === "all" || f.severity === filter.severity) &&
+      (filter.source === "all" || findingSource(f) === filter.source),
   );
 }
 
