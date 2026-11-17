@@ -1,0 +1,17 @@
+# Supabase CLI configuration for ContractSoup.
+# Reference: https://supabase.com/docs/guides/local-development/cli/config
+#
+# Only what this project changes is listed. Everything else keeps the CLI's defaults.
+
+# Names the local stack (`supabase start`). It is not the id of your hosted project:
+# that is set once with `supabase link --project-ref <your-project-ref>`.
+project_id = "contract-soup"
+
+# The AI reader. Reads contract page text with Gemini for a signed-in user.
+[functions.extract-contract-terms]
+enabled = true
+# Keep this on. The platform then rejects requests that carry no valid credential before the
+# function runs, and the function checks the user's session itself as well.
+verify_jwt = true
+import_map = "./functions/extract-contract-terms/deno.json"
+entrypoint = "./functions/extract-contract-terms/index.ts"

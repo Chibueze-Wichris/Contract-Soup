@@ -2,14 +2,32 @@ import { useState } from "react";
 import { ArrowRight, FileText, FlaskConical, Trash2 } from "lucide-react";
 import { FileDropzone } from "./FileDropzone";
 import { FileSummary } from "./FileSummary";
+import { ReaderChoice } from "./ReaderChoice";
 import { StepFooter, StepShell } from "./StepShell";
 import { Button, Modal, Notice, ProgressBar } from "@/components/ui";
+import { AI_READER_AVAILABLE } from "@/lib/aiReader";
 import { formatBytes, plural } from "@/lib/format";
 import { MAX_PDF_BYTES, MAX_PDF_PAGES } from "@/lib/pdf";
+import { readingNotes } from "@/lib/terms";
 import { useDraftAuditStore, type ContractState } from "@/store/useDraftAuditStore";
+
+/** "pages 101–125", for naming the batch a reading stopped on. */
+function failedRange(pages: readonly number[]): string {
+  if (pages.length === 0) return "";
+  const first = pages[0];
+  const last = pages[pages.length - 1];
+  return first === last ? `page ${first}` : `pages ${first}–${last}`;
+}
 
 /** What is happening while a contract is being read, in words. */
 function readingStatus(contract: ContractState): string {
+  if (contract.stage === "ai") {
+    // The analyzer says what it is doing, retries and waits included, as it goes.
+    if (contract.progressDetail) return contract.progressDetail;
+    return contract.pagesDone > 0
+      ? `Gemini has read ${contract.pagesDone} of ${plural(contract.pagesTotal, "page")}`
+      : "Gemini is reading the contract. This can take a minute or two.";
+  }
   if (contract.source === "sample") return "Loading the sample";
   if (contract.stage === "terms") return "Finding contract terms";
   if (contract.stage === "pages" && contract.pagesTotal > 0) {
@@ -27,22 +45,82 @@ export function UploadStep({ focusHeading }: { focusHeading: boolean }) {
   const loadSample = useDraftAuditStore((s) => s.loadSample);
   const cancelContract = useDraftAuditStore((s) => s.cancelContract);
   const removeContract = useDraftAuditStore((s) => s.removeContract);
+  const retryAiReading = useDraftAuditStore((s) => s.retryAiReading);
+  const switchToBuiltInReader = useDraftAuditStore((s) => s.switchToBuiltInReader);
+  const waitingForConsent = useDraftAuditStore((s) => AI_READER_AVAILABLE && s.reader === "gemini" && !s.aiConsent);
+  const mayAskGemini = useDraftAuditStore((s) => AI_READER_AVAILABLE && s.reader === "gemini" && s.aiConsent);
   const nextStep = useDraftAuditStore((s) => s.nextStep);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [dropError, setDropError] = useState("");
+  const [retryRefused, setRetryRefused] = useState(false);
 
   const { status } = contract;
   const sample = contract.source === "sample";
-  const pagesKnown = contract.stage === "pages" && contract.pagesTotal > 0;
+  const withGemini = contract.reader === "gemini";
+  const pagesKnown = (contract.stage === "pages" || contract.stage === "ai") && contract.pagesTotal > 0;
+  const blocked = waitingForConsent ? "Tick the box below to agree to send this contract's text to Google Gemini, or choose the built-in reader." : undefined;
+  const report = contract.aiReport;
+  const notes = report ? readingNotes(report) : null;
 
   return (
     <StepShell
       title="Upload contract"
-      description="Add the contract as a text-based PDF. It is read here in your browser and is never uploaded."
+      description={
+        AI_READER_AVAILABLE
+          ? "Add the contract as a text-based PDF. The file is read here in your browser and is never uploaded. If you choose the Gemini reader, the text of its pages is sent to Google Gemini."
+          : "Add the contract as a text-based PDF. It is read here in your browser and is never uploaded."
+      }
       focusHeading={focusHeading}
       view={status}
     >
-      {status === "error" && contract.error ? (
+      {status === "error" && contract.error && contract.aiFailure ? (
+        <Notice
+          tone="error"
+          title={contract.fileName ? `Gemini could not read ${contract.fileName}` : "Gemini could not read the contract"}
+          className="mb-4"
+        >
+          <p>{contract.error}</p>
+          {contract.aiFailure.failedPages.length > 0 ? (
+            <p className="mt-1">
+              {contract.aiFailure.pagesDone > 0
+                ? `${contract.aiFailure.pagesDone} of ${plural(contract.aiFailure.pagesTotal, "page")} with text had been read when it stopped${
+                    contract.aiFailure.retryable
+                      ? `, and those pages are kept: asking again carries on from ${failedRange(contract.aiFailure.failedPages)} instead of reading them again.`
+                      : "."
+                  } The reading is not finished, so it cannot be used for an audit yet.`
+                : `No pages had been read yet. The reading is not finished, so it cannot be used for an audit yet.`}
+            </p>
+          ) : null}
+          <p className="mt-1">
+            {contract.aiFailure.retryable
+              ? "Nothing has been read in its place. You can ask Gemini again, or have the built-in reader read this contract on this device instead."
+              : "Nothing has been read in its place. You can have the built-in reader read this contract on this device instead."}
+          </p>
+          {retryRefused && !mayAskGemini ? (
+            <p className="mt-1" role="status">
+              To ask Gemini again, choose the Gemini reader below and tick the box to agree.
+            </p>
+          ) : null}
+          <div className="mt-2 flex flex-wrap gap-2">
+            {contract.aiFailure.retryable ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  // The agreement can have been withdrawn since the failure. Nothing is sent without it.
+                  setRetryRefused(!mayAskGemini);
+                  if (mayAskGemini) void retryAiReading();
+                }}
+              >
+                Try Gemini again
+              </Button>
+            ) : null}
+            <Button variant="secondary" size="sm" onClick={() => void switchToBuiltInReader()}>
+              Use the built-in reader instead
+            </Button>
+          </div>
+        </Notice>
+      ) : status === "error" && contract.error ? (
         <Notice tone="error" title={contract.fileName ? `${contract.fileName} could not be used` : undefined} className="mb-4">
           {contract.error}
         </Notice>
@@ -54,6 +132,7 @@ export function UploadStep({ focusHeading }: { focusHeading: boolean }) {
 
       {status === "empty" || status === "error" ? (
         <>
+          {AI_READER_AVAILABLE ? <ReaderChoice /> : null}
           <FileDropzone
             accept="application/pdf,.pdf"
             title="Drag and drop your contract PDF here"
@@ -65,6 +144,7 @@ export function UploadStep({ focusHeading }: { focusHeading: boolean }) {
               void loadContract(file);
             }}
             onReject={setDropError}
+            blocked={blocked}
           />
           <div className="mt-4 flex flex-col gap-3 rounded-xl border border-line p-4 @lg:flex-row @lg:items-center @lg:justify-between">
             <div className="min-w-0">
@@ -78,8 +158,8 @@ export function UploadStep({ focusHeading }: { focusHeading: boolean }) {
               className="shrink-0"
               icon={<FlaskConical className="h-4 w-4" />}
               onClick={() => {
-                setDropError("");
-                void loadSample();
+                setDropError(blocked ?? "");
+                if (!blocked) void loadSample();
               }}
             >
               Try the sample
@@ -95,7 +175,7 @@ export function UploadStep({ focusHeading }: { focusHeading: boolean }) {
           details={contract.fileSize === null ? [] : [formatBytes(contract.fileSize)]}
           sample={sample}
           action={
-            sample ? undefined : (
+            sample && !withGemini ? undefined : (
               <Button variant="secondary" size="sm" onClick={cancelContract}>
                 Cancel
               </Button>
@@ -104,7 +184,7 @@ export function UploadStep({ focusHeading }: { focusHeading: boolean }) {
         >
           <ProgressBar
             value={pagesKnown ? contract.pagesDone / contract.pagesTotal : null}
-            label={sample ? "Loading the sample" : `Reading ${contract.fileName}`}
+            label={contract.stage === "ai" ? "Gemini is reading the contract" : sample ? "Loading the sample" : `Reading ${contract.fileName}`}
             valueText={readingStatus(contract)}
           />
           <p className="num mt-2 text-xs text-muted">{readingStatus(contract)}</p>
@@ -120,6 +200,7 @@ export function UploadStep({ focusHeading }: { focusHeading: boolean }) {
               plural(contract.pageCount, "page"),
               ...(contract.fileSize === null ? [] : [formatBytes(contract.fileSize)]),
               termCount === 0 ? "No terms found" : `${plural(termCount, "term")} found`,
+              ...(withGemini ? [report?.model ? `Read by Gemini (${report.model})` : "Read by Gemini"] : []),
             ]}
             sample={sample}
             action={
@@ -136,6 +217,22 @@ export function UploadStep({ focusHeading }: { focusHeading: boolean }) {
           {termCount === 0 ? (
             <Notice tone="warning" className="mt-4" title="No contract terms were found in this file">
               You can add terms by hand in the next step, or remove this file and try another one.
+            </Notice>
+          ) : null}
+          {withGemini && report ? (
+            <Notice className="mt-4" title="Gemini read this contract">
+              <p>
+                Every term is unconfirmed until you have checked it against the quoted wording in the next step.
+                {report.observations > 0
+                  ? ` ${plural(report.observations, "observation")} about the wording will be added to the report, marked as AI reading.`
+                  : ""}
+              </p>
+              {notes?.leftOut ? <p className="mt-1">{notes.leftOut}</p> : null}
+            </Notice>
+          ) : null}
+          {withGemini && notes?.incomplete ? (
+            <Notice tone="warning" className="mt-4" title={notes.incomplete.title}>
+              {notes.incomplete.text}
             </Notice>
           ) : null}
         </>

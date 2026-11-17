@@ -2,7 +2,8 @@ import { NavLink } from "react-router-dom";
 import { Lock } from "lucide-react";
 import { Logo } from "./Logo";
 import { Badge } from "@/components/ui";
-import { NAV_ITEMS, PRIVACY_LINE } from "@/lib/nav";
+import { AI_READER_AVAILABLE } from "@/lib/aiReader";
+import { NAV_ITEMS, PRIVACY_LINE, PRIVACY_LINE_WITH_AI } from "@/lib/nav";
 import { cn } from "@/lib/cn";
 import { isSupabaseConfigured } from "@/lib/supabase";
 
@@ -44,10 +45,12 @@ export function Sidebar() {
         <div className="flex items-start gap-2.5">
           <Lock className="mt-0.5 h-4 w-4 shrink-0 text-brand" aria-hidden="true" />
           <p className="text-xs text-muted">
-            <span className="block font-medium text-ink">{PRIVACY_LINE}</span>
-            {isSupabaseConfigured
-              ? "Files are read in your browser. Only your reports are saved to your account."
-              : "Files are read in your browser and saved only in local storage."}
+            <span className="block font-medium text-ink">{AI_READER_AVAILABLE ? PRIVACY_LINE_WITH_AI : PRIVACY_LINE}</span>
+            {AI_READER_AVAILABLE
+              ? "Only your reports are saved to your account. A contract's text goes to Google Gemini only when you choose the Gemini reader for an audit. Claims are never sent."
+              : isSupabaseConfigured
+                ? "Files are read in your browser. Only your reports are saved to your account."
+                : "Files are read in your browser and saved only in local storage."}
           </p>
         </div>
         <div className="mt-3">

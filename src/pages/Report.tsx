@@ -8,7 +8,9 @@ import { FindingsSection } from "@/components/report/FindingsSection";
 import { ReportSummary } from "@/components/report/ReportSummary";
 import { TermsUsed } from "@/components/report/TermsUsed";
 import { Button, Card, Notice, PageSkeleton, buttonClasses, toast } from "@/components/ui";
+import { geminiName, usedGemini } from "@/lib/analyzerText";
 import { STORAGE_PLACE } from "@/lib/auditRepo";
+import { isAiFinding } from "@/lib/findings";
 import { formatCount, formatDateTime, plural } from "@/lib/format";
 import { useAudit, type FindingPatch } from "@/lib/useAudit";
 
@@ -52,6 +54,8 @@ function ReportBody({ audit, onUpdate, saveError, onRetrySave }: ReportBodyProps
   const [exporting, setExporting] = useState(false);
   const confirmedTerms = audit.terms.filter((t) => t.confirmed).length;
   const hasClaims = audit.claimsCount > 0;
+  const withGemini = usedGemini(audit);
+  const observations = audit.findings.filter(isAiFinding).length;
 
   async function downloadPdf(): Promise<void> {
     setExporting(true);
@@ -102,6 +106,21 @@ function ReportBody({ audit, onUpdate, saveError, onRetrySave }: ReportBodyProps
           </Notice>
         ) : null}
 
+        {withGemini ? (
+          <Notice title={`${geminiName(audit)} read this contract`}>
+            <p>
+              The contract terms were found by Gemini and confirmed by a person before the money checks used them.
+              {observations > 0
+                ? ` ${plural(observations, "finding")} marked AI reading ${observations === 1 ? "is an observation" : "are observations"} Gemini made about the wording. ${observations === 1 ? "It carries" : "They carry"} no dollar estimate and ${observations === 1 ? "is" : "are"} not part of the estimated exposure.`
+                : ""}
+            </p>
+            <p className="mt-1">
+              Everything Gemini reported quotes the contract, and each quotation was checked against the PDF. An AI
+              reading can still be wrong or incomplete. It is not legal advice.
+            </p>
+          </Notice>
+        ) : null}
+
         {!hasClaims ? (
           <Notice tone="warning" title="This audit ran without a claims file">
             Nothing you were charged was checked. Run a new audit with your claims to look for overcharges.
@@ -137,9 +156,12 @@ function ReportBody({ audit, onUpdate, saveError, onRetrySave }: ReportBodyProps
 
         <TermsUsed audit={audit} />
 
-        <p className="text-xs text-muted">
-          Worked out on this device by analyzer {audit.analyzerVersion}. The dollar figures are estimates from the{" "}
-          {formatCount(audit.pageCount)}-page contract and the claims you provided.
+        <p className="break-words text-xs text-muted">
+          {withGemini
+            ? `The contract was read by ${geminiName(audit)}. The money checks were worked out on this device. Analyzer ${audit.analyzerVersion}.`
+            : `Worked out on this device by analyzer ${audit.analyzerVersion}.`}{" "}
+          The dollar figures are estimates from the {formatCount(audit.pageCount)}-page contract and the claims you
+          provided.
         </p>
       </div>
     </>

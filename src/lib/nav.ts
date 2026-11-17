@@ -17,3 +17,5 @@ export const NAV_ITEMS: NavItem[] = [
 
 export const DISCLAIMER = "Analytical report for review by your legal team. Not legal advice.";
 export const PRIVACY_LINE = "Your files never leave this device";
+/** For builds that offer the Gemini reader: the files still stay here, but a contract's text can be sent when the user chooses to. */
+export const PRIVACY_LINE_WITH_AI = "Your files are read on this device";

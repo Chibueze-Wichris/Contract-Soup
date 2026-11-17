@@ -2,6 +2,7 @@ export { Button, buttonClasses } from "./Button";
 export type { ButtonProps, ButtonVariant, ButtonSize } from "./Button";
 export { Card, CardHeader } from "./Card";
 export { Badge, SeverityBadge, SuccessBadge } from "./Badge";
+export { AiBadge, NeedsReviewBadge } from "./AiBadge";
 export type { BadgeTone, Severity } from "./Badge";
 export { Input } from "./Input";
 export type { InputProps } from "./Input";

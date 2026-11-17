@@ -1,5 +1,16 @@
 node_modules
 dist
+
+# Private environment files. Real keys live only in these and are never committed.
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+supabase/functions/.env
+supabase/functions/.env.*
+!supabase/functions/.env.example
+supabase/.env
+supabase/.env.*
+
+# Supabase CLI working files
+supabase/.temp
+supabase/.branches

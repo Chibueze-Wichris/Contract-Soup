@@ -80,7 +80,7 @@ export default function SavedReports() {
         title="Saved reports"
         description={
           STORAGE_PLACE === "account"
-            ? "Audits saved in your account. Your contract and claims files are never uploaded."
+            ? "Audits saved in your account. Your contract and claims files are not stored there."
             : "Audits saved on this device. Nothing is stored on a server."
         }
       />

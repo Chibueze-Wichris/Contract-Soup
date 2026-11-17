@@ -1,13 +1,16 @@
 import { ChevronRight } from "lucide-react";
 import type { Audit } from "@/analyzer";
-import { Card } from "@/components/ui";
+import { categoryLabel, isMoneyCategory } from "@/analyzer/categories";
+import { AiBadge, Card } from "@/components/ui";
 import { formatCount, plural } from "@/lib/format";
-import { describeTermValue, termTitle } from "@/lib/terms";
+import { describeTermValue, isAiTerm, termNotes, termTitle } from "@/lib/terms";
 
 /** The confirmed contract terms the claims were checked against. Closed until the reader asks for it. */
 export function TermsUsed({ audit }: { audit: Audit }) {
   const used = audit.terms.filter((t) => t.confirmed);
   const unused = audit.terms.filter((t) => !t.confirmed);
+  const anyFromAi = audit.terms.some(isAiTerm);
+  const usedByChecks = used.filter((t) => isMoneyCategory(t.category)).length;
   if (audit.terms.length === 0) return null;
 
   return (
@@ -23,6 +26,9 @@ export function TermsUsed({ audit }: { audit: Audit }) {
             <span className="mt-1 block break-words text-sm text-muted">
               {formatCount(used.length)} of the {plural(audit.terms.length, "term")} found in {audit.contractFileName}{" "}
               {used.length === 1 ? "was" : "were"} confirmed and used.
+              {anyFromAi && used.length > 0
+                ? ` The money checks used the ${plural(usedByChecks, "financial term")} among them. The other provisions are kept for reference.`
+                : ""}
             </span>
           </span>
         </summary>
@@ -46,11 +52,24 @@ export function TermsUsed({ audit }: { audit: Audit }) {
                 <tbody>
                   {used.map((t) => (
                     <tr key={t.id} className="border-b border-line last:border-b-0">
-                      <th scope="row" className="py-2 pr-3 font-normal text-ink">
-                        {termTitle(t)}
+                      <th scope="row" className="py-2 pr-3 align-top font-normal text-ink">
+                        <span className="break-words">{termTitle(t)}</span>
+                        {isAiTerm(t) ? (
+                          <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <AiBadge />
+                            {categoryLabel(t.category) === termTitle(t) ? null : (
+                              <span className="text-xs text-muted">{categoryLabel(t.category)}</span>
+                            )}
+                          </span>
+                        ) : null}
+                        {termNotes(t).map((note) => (
+                          <span key={note} className="mt-1 block break-words text-xs text-muted">
+                            {note}
+                          </span>
+                        ))}
                       </th>
-                      <td className="num px-3 py-2 text-ink">{describeTermValue(t)}</td>
-                      <td className="num py-2 pl-3 text-right text-muted">{formatCount(t.pageRef)}</td>
+                      <td className="num px-3 py-2 align-top text-ink">{describeTermValue(t)}</td>
+                      <td className="num py-2 pl-3 text-right align-top text-muted">{formatCount(t.pageRef)}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -1,9 +1,9 @@
 import { ChevronRight, StickyNote } from "lucide-react";
 import type { Finding } from "@/analyzer";
 import { findingTypeLabel } from "@/analyzer/categories";
-import { SeverityBadge } from "@/components/ui";
+import { AiBadge, NeedsReviewBadge, SeverityBadge } from "@/components/ui";
 import { cn } from "@/lib/cn";
-import { impactText } from "@/lib/findings";
+import { awaitsReview, impactText, isAiFinding } from "@/lib/findings";
 import { StatusBadge } from "./StatusBadge";
 
 interface FindingRowProps {
@@ -24,6 +24,8 @@ export function FindingRow({ finding, onOpen }: FindingRowProps) {
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <SeverityBadge severity={finding.severity} />
+            {isAiFinding(finding) ? <AiBadge>AI reading</AiBadge> : null}
+            {awaitsReview(finding) ? <NeedsReviewBadge /> : null}
             <span className="text-xs text-muted">{findingTypeLabel(finding.type)}</span>
           </span>
           <span className={cn("mt-1.5 block break-words text-sm font-medium", dismissed ? "text-muted" : "text-ink")}>

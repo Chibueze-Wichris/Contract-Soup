@@ -7,6 +7,7 @@ import { FileDropzone } from "./FileDropzone";
 import { FileSummary } from "./FileSummary";
 import { StepFooter, StepShell } from "./StepShell";
 import { Button, Modal, Notice, ProgressBar } from "@/components/ui";
+import { AI_READER_AVAILABLE } from "@/lib/aiReader";
 import {
   CLAIM_FIELDS,
   MAX_CLAIM_ROWS,
@@ -44,7 +45,11 @@ export function ClaimsStep({ focusHeading }: { focusHeading: boolean }) {
   return (
     <StepShell
       title="Upload claims"
-      description="Optional, but recommended. With a claims file, what you were charged is checked against the confirmed terms. The file is read here in your browser and is never uploaded."
+      description={
+        AI_READER_AVAILABLE
+          ? "Optional, but recommended. With a claims file, what you were charged is checked against the confirmed terms. The file is read here in your browser. It is never uploaded and never sent to Gemini."
+          : "Optional, but recommended. With a claims file, what you were charged is checked against the confirmed terms. The file is read here in your browser and is never uploaded."
+      }
       focusHeading={focusHeading}
       view={status}
     >

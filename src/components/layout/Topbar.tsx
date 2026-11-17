@@ -5,7 +5,8 @@ import { ThemeToggle } from "./ThemeToggle";
 import { Button, buttonClasses } from "@/components/ui";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { useAuthStore } from "@/store/useAuthStore";
-import { PRIVACY_LINE } from "@/lib/nav";
+import { AI_READER_AVAILABLE } from "@/lib/aiReader";
+import { PRIVACY_LINE, PRIVACY_LINE_WITH_AI } from "@/lib/nav";
 
 export function Topbar() {
   const user = useAuthStore((s) => s.user);
@@ -18,7 +19,7 @@ export function Topbar() {
       </Link>
       <p className="hidden items-center gap-2 text-sm text-muted md:flex">
         <Lock className="h-4 w-4 text-brand" aria-hidden="true" />
-        {PRIVACY_LINE}
+        {AI_READER_AVAILABLE ? PRIVACY_LINE_WITH_AI : PRIVACY_LINE}
       </p>
 
       <div className="flex items-center gap-2">
