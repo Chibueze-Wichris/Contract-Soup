@@ -327,6 +327,27 @@ test("Gemini failures are reported in plain words, with the right status and no 
   assert.equal(res.headers.get("retry-after"), "900");
   assert.equal(readErrorResponse(await res.json())?.retryAfterSeconds, 900);
 
+  // The same for an outage: 503 from Google becomes a retryable 502 whose wait reaches the
+  // browser in the body and the header, so it can wait and ask again for the same pages.
+  const out = makeWorld({ gemini: [google(503, "UNAVAILABLE", { "Retry-After": "12" })] });
+  const outRes = await out.handle(request({ body: EXTRACT }));
+  assert.equal(outRes.status, 502);
+  assert.equal(outRes.headers.get("retry-after"), "12");
+  const outError = readErrorResponse(await outRes.json());
+  assert.deepEqual([outError?.code, outError?.retryable, outError?.retryAfterSeconds], ["upstream_unavailable", true, 12]);
+  // And the attempts are logged with their retry decisions: a wait of 12s was taken between them.
+  const attemptLogs = out.logs.filter((l) => l.event === "ai_gemini_attempt");
+  assert.equal(attemptLogs.length, 3, "one call and the two configured retries");
+  assert.deepEqual(
+    attemptLogs.map((l) => [l.retryDecision, l.willRetry]),
+    [
+      ["retry", true],
+      ["retry", true],
+      ["give_up_max_retries", false],
+    ],
+  );
+  assert.ok(attemptLogs.every((l) => l.retryAfterSeconds === 12));
+
   const named = makeWorld({ gemini: [google(404, "NOT_FOUND")], env: { GEMINI_MODEL: "gemini-9-imaginary" } });
   assert.match((await errorOf(await named.handle(request({ body: EXTRACT })))).message, /gemini-9-imaginary.*GEMINI_MODEL/);
 });

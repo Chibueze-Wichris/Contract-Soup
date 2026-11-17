@@ -45,6 +45,10 @@ export interface StandIn {
   rows: Record<string, unknown>[];
   /** When set, what Gemini answers for a request holding these pages, in place of the reading of the sample agreement. */
   answer: ((pages: number[]) => unknown) | null;
+  /** The next this many calls to Gemini answer 503, then Gemini recovers. For a passing outage. */
+  failNextGeminiCalls: number;
+  /** When set and true for a request's pages, Gemini answers 503 for that request however often it is asked. */
+  failForPages: ((pages: number[]) => boolean) | null;
   /** Forgets the requests seen so far. */
   forget(): void;
   close(): Promise<void>;
@@ -93,6 +97,8 @@ export async function startStandIn(): Promise<StandIn> {
     geminiHeaders: [],
     rows: [],
     answer: null,
+    failNextGeminiCalls: 0,
+    failForPages: null,
     forget() {
       this.toFunction.length = 0;
       this.toGemini.length = 0;
@@ -115,11 +121,16 @@ export async function startStandIn(): Promise<StandIn> {
       const body = typeof init.body === "string" ? init.body : "";
       standIn.toGemini.push(body);
       standIn.geminiHeaders.push(headers);
+      const sent = String((JSON.parse(body) as { input?: unknown }).input ?? "");
+      const pages = [...sent.matchAll(/<<<BEGIN PAGE (\d+) /g)].map((m) => Number(m[1]));
+      if (standIn.failNextGeminiCalls > 0) {
+        standIn.failNextGeminiCalls -= 1;
+        return Response.json({ error: { code: 503, status: "UNAVAILABLE" } }, { status: 503 });
+      }
+      if (standIn.failForPages?.(pages)) return Response.json({ error: { code: 503, status: "UNAVAILABLE" } }, { status: 503 });
       if (standIn.mode === "busy") return Response.json({ error: { code: 429, status: "RESOURCE_EXHAUSTED", message: "Quota exceeded." } }, { status: 429 });
       if (standIn.mode === "down") return Response.json({ error: { code: 503, status: "UNAVAILABLE" } }, { status: 503 });
       if (standIn.mode === "slow") await new Promise((resolve) => setTimeout(resolve, 2_500));
-      const sent = String((JSON.parse(body) as { input?: unknown }).input ?? "");
-      const pages = [...sent.matchAll(/<<<BEGIN PAGE (\d+) /g)].map((m) => Number(m[1]));
       if (pages.length === 0) return Response.json(interaction("ready"));
       return Response.json(interaction(JSON.stringify(standIn.answer ? standIn.answer(pages) : sampleModelAnswerFor(pages))));
     },

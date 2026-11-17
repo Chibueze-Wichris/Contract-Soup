@@ -75,7 +75,15 @@ async function post(body: AiRequestBody, signal?: AbortSignal, timeoutMs = REQUE
       signal: controller.signal,
     });
     const json: unknown = await res.json().catch(() => null);
-    return { status: res.status, body: json };
+    // The function repeats the wait Gemini asked for as a header as well as in the error body.
+    // The body is what the analyzer reads first; the header covers an answer whose body could
+    // not be read as one of the function's own errors.
+    const retryAfter = Number(res.headers.get("retry-after") ?? "");
+    return {
+      status: res.status,
+      body: json,
+      ...(Number.isFinite(retryAfter) && retryAfter > 0 && retryAfter < 86_400 ? { retryAfterSeconds: Math.ceil(retryAfter) } : {}),
+    };
   } catch (err) {
     if (signal?.aborted) throw err; // cancelled by the user: the caller knows
     if (timedOut) return { status: 0, body: null, failure: "timeout" };

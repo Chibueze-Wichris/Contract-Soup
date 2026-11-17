@@ -181,6 +181,18 @@ request reaches the limit on terms, is cut short, or gets no answer in time, its
 in two halves, so a dense contract is read in full. If a single page reaches the limit, its terms are kept
 and the review step names the page as one that may hold more.
 
+Two lots of retrying sit between a passing Gemini failure and the reader giving up, and they do different
+jobs. Inside one request, the function tries a failed call again (up to `GEMINI_MAX_RETRIES`), waiting as
+long as Gemini's `Retry-After` asks or its own doubling backoff, whichever is longer, and never past the
+request deadline; each attempt is logged with its outcome and the reason another attempt did or did not
+follow. If that is not enough, the function answers with a retryable error that carries the wait in its
+body and its `Retry-After` header. The browser then asks for **the same batch again** — up to three more
+times, with its own backoff and jitter, never sooner than the wait it was given, and within a two-minute
+budget for that batch. An unavailable Gemini (503, 502, a rate limit, a dropped connection) is never taken
+as a sign the batch held too many pages, so it is not halved; halving is kept for the term limit, for
+answers cut short, and for timeouts that retrying the same batch did not cure. A failure that asking again
+cannot fix — a refused key, a sign-in, a model the key cannot use — is not retried at all.
+
 Limits: a PDF of up to 600 pages and 100 MB, with text in it (scanned copies have none), and up to 30,000
 characters on a page. How long a reading takes depends on Gemini. Each request is given up to 140 seconds,
 and the first step shows how many pages have been read so far.
@@ -189,8 +201,12 @@ and the first step shows how many pages have been read so far.
 
 The audit stops with a notice that names the cause: the function is not deployed, the key is missing or was
 refused, the model is not available to the key, Gemini is too busy or did not answer, or the account or the
-website is not allowed. Where asking again can help, **Try Gemini again** asks only for the pages that are
-still missing. **Use the built-in reader instead** reads the same pages on the device.
+website is not allowed. While a contract is being read, the first step says which pages are being read,
+when Gemini is being waited for and how long for, and how many pages have been read so far. If a batch
+still cannot be read after all the retrying, the notice names its pages and says how many pages had
+already been read; those pages are kept, the reading is not marked finished, and **Try Gemini again**
+carries on from the failed batch rather than reading them again. A different contract never reuses them.
+**Use the built-in reader instead** reads the same pages on the device.
 
 ## Privacy
 

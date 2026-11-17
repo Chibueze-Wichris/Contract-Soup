@@ -1,11 +1,11 @@
-import { GeminiAnalyzer, type AiTransport } from "./gemini";
+import { GeminiAnalyzer, type AiTransport, type GeminiAnalyzerOptions } from "./gemini";
 import { LocalHeuristicAnalyzer } from "./local";
 import type { Analyzer } from "./types";
 
 export type { Analyzer, Audit, ClaimRow, ContractTerm, Finding, NoticePeriod, PageText, Settings } from "./types";
 export { DEFAULT_SETTINGS } from "./types";
-export { AiReaderError, GEMINI_ANALYZER_VERSION, GeminiAnalyzer, NO_ANSWER_MESSAGE } from "./gemini";
-export type { AiProgress, AiReadOptions, AiReadReport, AiTransport, AiTransportResult } from "./gemini";
+export { AiReaderError, CLIENT_RETRY, GEMINI_ANALYZER_VERSION, GeminiAnalyzer, NO_ANSWER_MESSAGE } from "./gemini";
+export type { AiFailureContext, AiProgress, AiReadOptions, AiReadReport, AiRetryPolicy, AiTransport, AiTransportResult, GeminiAnalyzerOptions } from "./gemini";
 
 let cached: Analyzer | null = null;
 
@@ -27,6 +27,6 @@ export function getAnalyzer(): Analyzer {
  * Which analyzer an audit uses is the user's choice, made for that audit. There is no build
  * setting that switches it, and a failure of this one never falls back to the other by itself.
  */
-export function createGeminiAnalyzer(transport: AiTransport): GeminiAnalyzer {
-  return new GeminiAnalyzer(transport);
+export function createGeminiAnalyzer(transport: AiTransport, options?: GeminiAnalyzerOptions): GeminiAnalyzer {
+  return new GeminiAnalyzer(transport, options);
 }

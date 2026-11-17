@@ -244,8 +244,8 @@ test("when Gemini fails the audit stops, and asking again needs the agreement to
   assert.match(text, /Use the built-in reader instead/);
   assert.match(text, /Step 2 of 4: Review contract terms , not available yet/);
   assert.doesNotMatch(text, /terms found|terms confirmed/, "the built-in reader did not step in");
-  assert.equal(project.toFunction.length, 1, "the app asked once");
-  assert.equal(project.toGemini.length, 2, "the function did the retrying");
+  assert.equal(project.toFunction.length, 4, "the app asked once, then retried the same batch three times in the browser");
+  assert.equal(project.toGemini.length, 8, "the function retried once inside each of those asks");
   await shot(page, "5-gemini-could-not-read");
 
   // Gemini recovers, but the person has unticked the box in the meantime.
@@ -267,6 +267,67 @@ test("when Gemini fails the audit stops, and asking again needs the agreement to
   await clickButton(page, "Try Gemini again");
   assert.ok(await waitForText(page, "terms confirmed"), "with the box ticked again, Gemini reads the contract");
   assert.equal(project.toFunction.length, 1);
+});
+
+test("a brief Gemini outage is ridden out: the same batch is asked again and the reading finishes by itself", options, async () => {
+  await freshAudit("answer");
+  // The function's own retry (one, in this stand-in) is not enough, and neither is the app's
+  // first ask: Gemini is down for three calls and then recovers.
+  project.failNextGeminiCalls = 3;
+  await chooseGemini(true);
+  await chooseFile(page, files.pdf);
+  assert.ok(await waitForText(page, "terms confirmed"), "the review step opens without the person asking again");
+  assert.equal(project.toFunction.length, 2, "one ask that failed, one retry of the same batch");
+  assert.equal(project.toGemini.length, 4, "down for three calls, then the answer");
+  const rows = await termRows(page);
+  assert.ok(rows.length >= 18, `${rows.length} terms`);
+});
+
+test("a batch that stays down stops the reading, and trying again from the screen resumes at that batch only", options, async () => {
+  // Thirty pages, one fee each: two batches, of 25 pages and 5.
+  const schedule = feeSchedule(30, () => 1);
+  const pdf = writePdf(path.join(folder, "Long-fee-schedule.pdf"), schedule.pages);
+  await freshAudit("answer");
+  project.answer = (pages) => schedule.answerFor(pages);
+  project.failForPages = (pages) => pages.includes(26);
+  try {
+    await chooseGemini(true);
+    await chooseFile(page, pdf);
+    assert.ok(await waitForText(page, "Gemini could not read Long-fee-schedule.pdf"), "the failure is shown");
+    const text = await pageText(page);
+    assert.match(text, /Pages 26–30 could not be read/);
+    assert.match(text, /25 of 30 pages with text had been read when it stopped/);
+    assert.match(text, /asking again carries on from pages 26–30/);
+    assert.match(text, /not finished, so it cannot be used for an audit yet/);
+    assert.deepEqual(
+      project.toFunction.map((body) => (JSON.parse(body) as { pages: { page: number }[] }).pages.map((p) => p.page)),
+      [
+        schedule.pages.slice(0, 25).map((p) => p.page),
+        schedule.pages.slice(25).map((p) => p.page),
+        schedule.pages.slice(25).map((p) => p.page),
+        schedule.pages.slice(25).map((p) => p.page),
+        schedule.pages.slice(25).map((p) => p.page),
+      ],
+      "the first batch once, then the failed batch and its three retries",
+    );
+
+    // Gemini recovers, and the person asks again from the same screen: only the failed batch goes.
+    project.failForPages = null;
+    project.forget();
+    await clickButton(page, "Try Gemini again");
+    assert.ok(await waitForText(page, "terms confirmed"), "the review step opens");
+    assert.deepEqual(
+      project.toFunction.map((body) => (JSON.parse(body) as { pages: { page: number }[] }).pages.map((p) => p.page)),
+      [schedule.pages.slice(25).map((p) => p.page)],
+      "the batch that had succeeded is not sent again",
+    );
+    const rows = await termRows(page);
+    assert.equal(rows.length, 30, "terms from both batches, in the end");
+    await shot(page, "5b-resumed-after-an-outage");
+  } finally {
+    project.answer = null;
+    project.failForPages = null;
+  }
 });
 
 test("the built-in reader takes over only when the person asks, and then nothing more is sent", options, async () => {

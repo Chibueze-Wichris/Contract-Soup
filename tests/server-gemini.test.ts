@@ -260,3 +260,31 @@ test("each attempt is reported with codes and timings only", async () => {
   );
   assert.equal(attempts[0].upstreamMessage, "backend overloaded");
 });
+
+test("each attempt also reports the retry decision, so a log says why no further attempt was made", async () => {
+  // One retry follows the first failure; the second failure is the last because the retries are used up.
+  const exhausted = setup([googleError(503, "UNAVAILABLE")], { settings: { ...SETTINGS, maxRetries: 1 } });
+  await fails(callGemini(exhausted.call), "upstream_unavailable");
+  assert.deepEqual(
+    exhausted.attempts.map((a) => [a.retryDecision, a.willRetry, a.retryAfterSeconds]),
+    [
+      ["retry", true, null],
+      ["give_up_max_retries", false, null],
+    ],
+  );
+  assert.ok((exhausted.attempts[0].retryDelayMs ?? 0) >= 1_000, "the wait before the retry is in the report");
+
+  // A wait Google asked for that cannot fit before the deadline is named as the reason, and kept on the error.
+  const beyondDeadline = setup([jsonResponse(429, {}, { "Retry-After": "600" })]);
+  const err = await fails(callGemini(beyondDeadline.call), "rate_limited");
+  assert.equal(err.retryAfterSeconds, 600);
+  assert.deepEqual(
+    beyondDeadline.attempts.map((a) => [a.retryDecision, a.willRetry, a.retryAfterSeconds, a.retryDelayMs]),
+    [["give_up_retry_after_beyond_deadline", false, 600, null]],
+  );
+
+  // A failure that cannot pass says so at once.
+  const permanent = setup([googleError(403, "PERMISSION_DENIED")]);
+  await fails(callGemini(permanent.call), "key_rejected");
+  assert.deepEqual(permanent.attempts.map((a) => a.retryDecision), ["give_up_not_retryable"]);
+});

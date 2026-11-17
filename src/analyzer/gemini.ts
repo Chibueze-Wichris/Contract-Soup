@@ -45,6 +45,11 @@ export interface AiTransportResult {
    * function's answer could not be read, which is what a browser sees when the function is missing.
    */
   failure?: "offline" | "timeout" | "signed_out" | "no_answer";
+  /**
+   * The function's `Retry-After` response header, in seconds, when it sent one. The error body can
+   * carry the same value; whichever is present is honoured, and neither is ever retried sooner than.
+   */
+  retryAfterSeconds?: number;
 }
 
 /**
@@ -71,31 +76,131 @@ export type AiFailureCode =
   | "bad_answer"
   | "cancelled";
 
+/** Where a reading stopped: the batch that could not be read, and how much was already read and kept. */
+export interface AiFailureContext {
+  /** Page numbers of the request that failed (the leaf batch, after any splitting). */
+  failedPages?: readonly number[];
+  /** Pages with text that had been read and kept when the failure stopped the reading. */
+  pagesDone?: number;
+  /** Pages with text in the whole document. */
+  pagesTotal?: number;
+  /** How many times the failed request was sent, including the retries inside this reading. */
+  attempts?: number;
+}
+
 /** The AI reader could not read the contract. `message` is written for the person using the app. */
 export class AiReaderError extends Error {
+  readonly failedPages?: readonly number[];
+  readonly pagesDone?: number;
+  readonly pagesTotal?: number;
+  readonly attempts?: number;
+
   constructor(
     readonly code: AiFailureCode,
     message: string,
     /** True when trying again later may work without changing anything. */
     readonly retryable: boolean,
     readonly retryAfterSeconds?: number,
+    context: AiFailureContext = {},
   ) {
     super(message);
     this.name = "AiReaderError";
+    this.failedPages = context.failedPages;
+    this.pagesDone = context.pagesDone;
+    this.pagesTotal = context.pagesTotal;
+    this.attempts = context.attempts;
   }
 }
 
 export interface AiProgress {
-  /** Pages Gemini has finished reading. */
+  /** Pages Gemini has finished reading. Only ever counts pages whose answer was checked and kept. */
   pagesDone: number;
-  /** Pages that have text to read. */
+  /** Pages that have text to read (blank pages are not sent, and do not count here). */
   pagesTotal: number;
+  /** Pages in the whole document, including any blank ones that were not sent. */
+  documentPages: number;
+  /** What is happening now: a first request, a retry, or the wait before one. */
+  phase: "starting" | "reading" | "waiting" | "retrying";
+  /** The batch being worked on, as page numbers. */
+  batchFirstPage?: number;
+  batchLastPage?: number;
+  batchIndex?: number;
+  batchTotal?: number;
+  /** Which send of this batch is in flight or next (1 is the first send). */
+  attempt?: number;
+  /** How many sends of this batch there may be at most, retries included. */
+  maxAttempts?: number;
+  /** How long the wait before the next send is, when `phase` is "waiting". */
+  retryDelayMs?: number;
+  /** The server code behind a wait ("upstream_unavailable", "rate_limited", ...), when known. */
+  failureCode?: string;
+  /** What is happening, in words a person can follow. */
+  message: string;
 }
 
 export interface AiReadOptions {
   signal?: AbortSignal;
   onProgress?: (progress: AiProgress) => void;
 }
+
+/**
+ * How a batch that fails for a passing reason (Gemini unavailable, rate limited, a timeout, a
+ * dropped connection) is asked for again by this browser, on top of the retries the Edge Function
+ * already makes inside one request. Bounded in three ways: a number of retries, a longest wait
+ * between them, and a total budget for the whole retry sequence of one batch.
+ */
+export interface AiRetryPolicy {
+  /** Retries after the first send of a batch. 0 turns the frontend retry off. */
+  maxRetries: number;
+  /** The first wait, in milliseconds. Each later wait doubles, up to `maxDelayMs`. */
+  baseDelayMs: number;
+  /** The longest wait the backoff itself will ask for. A longer server `Retry-After` is not cut down to this: the batch gives up instead, and says how long the server asked for. */
+  maxDelayMs: number;
+  /** The longest one batch's retry sequence may take, waits included, in milliseconds. */
+  budgetMs: number;
+}
+
+export const CLIENT_RETRY: AiRetryPolicy = { maxRetries: 3, baseDelayMs: 1_000, maxDelayMs: 30_000, budgetMs: 120_000 };
+
+/** Knobs for the analyzer itself. The retry ones exist so tests can run the policy without really waiting. */
+export interface GeminiAnalyzerOptions {
+  retryPolicy?: Partial<AiRetryPolicy>;
+  /** Waits before a retry. Given the signal, so a wait can be cut short. Defaults to a real, cancellable wait. */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /** Source of the jitter added to each wait, returning 0 to 1. Defaults to Math.random. */
+  random?: () => number;
+  /** The clock the retry budget is measured on. Defaults to Date.now. */
+  now?: () => number;
+}
+
+const clampPolicy = (partial: Partial<AiRetryPolicy> = {}): AiRetryPolicy => {
+  const pick = (value: number | undefined, fallback: number, min: number, max: number): number =>
+    typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, Math.floor(value))) : fallback;
+  return {
+    maxRetries: pick(partial.maxRetries, CLIENT_RETRY.maxRetries, 0, 10),
+    baseDelayMs: pick(partial.baseDelayMs, CLIENT_RETRY.baseDelayMs, 0, 600_000),
+    maxDelayMs: pick(partial.maxDelayMs, CLIENT_RETRY.maxDelayMs, 0, 600_000),
+    budgetMs: pick(partial.budgetMs, CLIENT_RETRY.budgetMs, 0, 3_600_000),
+  };
+};
+
+/** A wait that stops as soon as the reading is cancelled, and says so by rejecting. */
+const cancellableSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("cancelled"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new Error("cancelled"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 
 /** What happened during a reading, for the review screen. Counts only. */
 export interface AiReadReport {
@@ -142,19 +247,61 @@ interface BatchResult {
   pages: number[];
 }
 
-/** What is known about one request's pages: its checked answer, or that they must be asked about in two halves. */
-type Held = BatchResult | "split";
+/** What is known about one request's pages: its checked answer, or that they must be asked about in two halves, and why. */
+type Held = BatchResult | "split" | "split-time";
 
 /**
- * Whether a failed request would succeed if it held fewer pages.
+ * What a failed request should lead to. The distinction that matters most: a Gemini 503 (and its
+ * neighbours) is the service being unavailable, not evidence that the request held too many pages,
+ * so it is asked for again as it stands. Only the two older signals split a batch:
  *   "size"  the answer was cut off because it grew too long: asking again for the same pages cannot work
- *   "time"  no answer came in time: fewer pages take less time, but Gemini may also just be slow today
+ *   "time"  no answer came in time: fewer pages take less time, but Gemini may also just be slow today,
+ *           so the same batch is retried first and only halved when retrying it has not helped
+ * Everything else that may pass ("transient": unavailable, rate limited, a dropped connection) is
+ * retried as it stands and never halved. The rest is "permanent" for this reading: retrying the
+ * same request unchanged cannot fix a key, a sign-in, a model name or a malformed answer, so it
+ * stops at once and says why. (Trying again by hand later stays possible whenever the error says
+ * it is retryable; that is a separate, human decision.)
  */
-function helpedByFewerPages(result: AiTransportResult): "size" | "time" | null {
-  if (result.status === 0) return result.failure === "timeout" ? "time" : null;
-  const own = readErrorResponse(result.body);
-  if (own) return own.code === "model_output_incomplete" ? "size" : own.code === "upstream_timeout" ? "time" : null;
-  return result.status === 504 || result.status === 546 ? "time" : null;
+type FailureAction = "size" | "time" | "transient" | "permanent";
+
+interface FailureKind {
+  action: FailureAction;
+  /** The function's own error code, when it sent one. */
+  code: string | null;
+  /** How long the server asked us to wait, in seconds (error body first, then the response header). */
+  retryAfterSeconds: number | null;
+}
+
+function failureKind(result: AiTransportResult): FailureKind {
+  const own = result.status === 0 ? null : readErrorResponse(result.body);
+  const retryAfterSeconds = own?.retryAfterSeconds ?? result.retryAfterSeconds ?? null;
+  if (result.status === 0) {
+    // A thrown network error arrives here as an "offline" result made by the caller.
+    if (result.failure === "timeout") return { action: "time", code: "upstream_timeout", retryAfterSeconds };
+    if (result.failure === "offline" || result.failure === undefined) return { action: "transient", code: "network", retryAfterSeconds };
+    return { action: "permanent", code: result.failure, retryAfterSeconds };
+  }
+  if (own) {
+    if (own.code === "model_output_incomplete") return { action: "size", code: own.code, retryAfterSeconds };
+    if (own.code === "upstream_timeout") return { action: "time", code: own.code, retryAfterSeconds };
+    if (own.code === "upstream_unavailable" || own.code === "rate_limited" || own.code === "auth_unavailable")
+      return { action: "transient", code: own.code, retryAfterSeconds };
+    return { action: "permanent", code: own.code, retryAfterSeconds };
+  }
+  // Answered by the platform in front of the function, in its own shape.
+  if (result.status === 429) return { action: "transient", code: "rate_limited", retryAfterSeconds };
+  if (result.status === 504 || result.status === 546) return { action: "time", code: "upstream_timeout", retryAfterSeconds };
+  if (result.status === 502 || result.status === 503) return { action: "transient", code: "upstream_unavailable", retryAfterSeconds };
+  return { action: "permanent", code: null, retryAfterSeconds };
+}
+
+/** "pages 101–125", or "page 7". The failed batch as a person would name it. */
+function pageRange(pages: readonly PageText[]): string {
+  if (pages.length === 0) return "the contract";
+  const first = pages[0].page;
+  const last = pages[pages.length - 1].page;
+  return first === last ? `page ${first}` : `pages ${first}–${last}`;
 }
 
 /** A short, stable mark of a page's text, so that a changed page is never mistaken for one already read. */
@@ -222,7 +369,7 @@ function failureFrom(result: AiTransportResult): AiReaderError {
                   : own.code === "bad_model_output" || own.code === "model_output_incomplete"
                     ? "bad_answer"
                     : "unavailable";
-    return new AiReaderError(code, own.message, own.retryable, own.retryAfterSeconds);
+    return new AiReaderError(code, own.message, own.retryable, own.retryAfterSeconds ?? result.retryAfterSeconds);
   }
   // Anything else was answered by the platform in front of the function, not by the function.
   if (status === 401 || status === 403) return new AiReaderError("signed_out", "Your sign-in is no longer valid. Sign in again to use the AI reader.", false);
@@ -260,7 +407,20 @@ export class GeminiAnalyzer implements Analyzer {
   private observations: HeldObservation[] = [];
   private lastReport: AiReadReport | null = null;
 
-  constructor(private readonly transport: AiTransport) {}
+  private readonly retryPolicy: AiRetryPolicy;
+  private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+  private readonly random: () => number;
+  private readonly now: () => number;
+
+  constructor(
+    private readonly transport: AiTransport,
+    options: GeminiAnalyzerOptions = {},
+  ) {
+    this.retryPolicy = clampPolicy(options.retryPolicy);
+    this.sleep = options.sleep ?? cancellableSleep;
+    this.random = options.random ?? Math.random;
+    this.now = options.now ?? Date.now;
+  }
 
   /** Recorded on the audit. Names the model once it is known, and the local checks that did the arithmetic. */
   get version(): string {
@@ -280,15 +440,145 @@ export class GeminiAnalyzer implements Analyzer {
       this.done.clear();
       this.fingerprint = fingerprint;
     }
+    // A batch remembered as split for time is only "already halved" within the reading that
+    // halved it. On a fresh try its halves may be halved once more: Gemini may be slower still,
+    // and each time the person asks again, one more halving is allowed.
+    for (const [key, held] of this.done) if (held === "split-time") this.done.set(key, "split");
     this.observations = [];
     this.lastReport = null;
 
     const pagesTotal = batches.reduce((n, b) => n + b.length, 0);
     let pagesDone = 0;
     let requests = 0;
-    options.onProgress?.({ pagesDone, pagesTotal });
 
     const cancelled = (): AiReaderError => new AiReaderError("cancelled", "Reading was cancelled.", true);
+    if (options.signal?.aborted) throw cancelled();
+
+    const reportProgress = (partial: Omit<AiProgress, "pagesDone" | "pagesTotal" | "documentPages">): void => {
+      options.onProgress?.({ pagesDone, pagesTotal, documentPages: pages.length, ...partial });
+    };
+    reportProgress({
+      phase: "starting",
+      message: pagesTotal === pages.length ? "Gemini is reading the contract." : `Gemini is reading the contract. Blank pages are not sent, so ${pagesTotal} of ${pages.length} pages have text to read.`,
+    });
+
+    /** Names the batch a failure belongs to, and how much has already been read and kept. Never holds the cause twice. */
+    const withContext = (err: AiReaderError, batch: PageText[], attempts: number): AiReaderError => {
+      if (err.code === "cancelled" || err.failedPages !== undefined) return err;
+      return new AiReaderError(
+        err.code,
+        `${err.message} ${pageRange(batch).replace(/^p/, "P")} could not be read.`,
+        err.retryable,
+        err.retryAfterSeconds,
+        { failedPages: batch.map((p) => p.page), pagesDone, pagesTotal, attempts },
+      );
+    };
+
+    /**
+     * Sends one batch, asking again after a passing failure. Returns the checked answer, or
+     * "split" when the batch must be asked about in two halves. A failure that asking again
+     * cannot fix, and one whose retries run out, is thrown with the batch named on it.
+     *
+     * Only a checked answer is ever stored in `done`. A failed send stores nothing, so asking
+     * again later — in this reading after a wait, or when the person retries — sends exactly
+     * this batch again and no batch that already succeeded.
+     */
+    const sendBatch = async (batch: PageText[], halvedForTime: boolean, batchIndex: number): Promise<Held> => {
+      // PRIVACY: this is everything that leaves the device. Page numbers and page text, nothing else.
+      const request: ExtractRequestBody = { task: "extract", pages: batch, documentPages: pages.length };
+      const policy = this.retryPolicy;
+      const maxAttempts = 1 + policy.maxRetries;
+      const startedAt = this.now();
+      let attempt = 0;
+
+      for (;;) {
+        if (options.signal?.aborted) throw cancelled();
+        attempt += 1;
+        requests += 1;
+        reportProgress({
+          phase: attempt === 1 ? "reading" : "retrying",
+          batchFirstPage: batch[0]?.page,
+          batchLastPage: batch[batch.length - 1]?.page,
+          batchIndex,
+          batchTotal: batches.length,
+          attempt,
+          maxAttempts,
+          message:
+            attempt === 1
+              ? `Processing ${pageRange(batch)} of ${pages.length}.`
+              : `Trying ${pageRange(batch)} again (attempt ${attempt} of ${maxAttempts}).`,
+        });
+
+        let result: AiTransportResult;
+        try {
+          result = await this.transport(request, options.signal);
+        } catch {
+          if (options.signal?.aborted) throw cancelled();
+          // A transport that throws has no answer to classify: that is a connection that dropped.
+          result = { status: 0, body: null, failure: "offline" };
+        }
+        if (options.signal?.aborted) throw cancelled();
+
+        if (result.status === 200) {
+          let answer: BatchResult;
+          try {
+            answer = readBatch(result.body, batch);
+          } catch (err) {
+            if (err instanceof AiReaderError) throw withContext(err, batch, attempt);
+            throw err;
+          }
+          // At the limit with several pages: what was left unreported cannot be known, so the answer is not used.
+          return answer.atTermLimit && batch.length > 1 ? "split" : answer;
+        }
+
+        const kind = failureKind(result);
+        if (kind.action === "size") {
+          if (batch.length > 1) return "split";
+          throw withContext(failureFrom(result), batch, attempt); // one page cannot be halved, and asking again cannot shorten its answer
+        }
+        if (kind.action === "permanent") throw withContext(failureFrom(result), batch, attempt);
+
+        // Passing failure. A batch that was already halved for time and still gets no answer in
+        // time is not halved again in this reading: the pages are unlikely to be the cause.
+        const maySplitForTime = kind.action === "time" && batch.length > 1 && !halvedForTime;
+        if (attempt >= maxAttempts) {
+          if (maySplitForTime) return "split-time";
+          throw withContext(failureFrom(result), batch, attempt);
+        }
+
+        // The wait: our own doubling backoff with jitter, but never shorter than the server's
+        // Retry-After. A wait that cannot fit in what is left of the budget is not slept through
+        // in part: the batch gives up now, carrying the server's wait on the error, so the
+        // person is told honestly how long Gemini asked for.
+        const backoff = Math.min(policy.maxDelayMs, policy.baseDelayMs * 2 ** (attempt - 1));
+        const jitter = Math.floor(Math.max(0, Math.min(1, this.random())) * Math.min(250, backoff / 4));
+        const retryAfterMs = (kind.retryAfterSeconds ?? 0) * 1_000;
+        const waitMs = Math.max(backoff + jitter, retryAfterMs);
+        if (waitMs > policy.budgetMs - (this.now() - startedAt)) {
+          if (maySplitForTime) return "split-time";
+          throw withContext(failureFrom(result), batch, attempt);
+        }
+        reportProgress({
+          phase: "waiting",
+          batchFirstPage: batch[0]?.page,
+          batchLastPage: batch[batch.length - 1]?.page,
+          batchIndex,
+          batchTotal: batches.length,
+          attempt: attempt + 1,
+          maxAttempts,
+          retryDelayMs: waitMs,
+          ...(kind.code ? { failureCode: kind.code } : {}),
+          message: `Gemini is temporarily unavailable. Retrying ${pageRange(batch)} in ${Math.max(1, Math.round(waitMs / 1_000))} seconds (retry ${attempt} of ${policy.maxRetries}). ${pagesDone} of ${pagesTotal} pages read so far.`,
+        });
+        try {
+          await this.sleep(waitMs, options.signal);
+        } catch {
+          if (options.signal?.aborted) throw cancelled();
+          throw cancelled();
+        }
+        if (options.signal?.aborted) throw cancelled();
+      }
+    };
 
     /**
      * Reads these pages, in as many requests as it takes.
@@ -296,54 +586,50 @@ export class GeminiAnalyzer implements Analyzer {
      * One answer holds a limited number of terms and must arrive within a time limit. When a
      * request turns out to hold more than that allows, its pages are asked about again in two
      * halves, so a dense contract is read in full instead of losing its less prominent terms.
+     * An unavailable Gemini ("transient", and a timeout that retrying did not cure in a batch
+     * already halved for time) never splits a batch: the same pages are asked for again, and
+     * only this batch, until its retries run out.
      *
      * `halvedForTime` says these pages are already half of a request that got no answer in time.
      * If they get none either, the cause is more likely Gemini than the pages, and the reading
      * stops there. Each time the person asks again, one more halving is allowed.
      */
-    const read = async (batch: PageText[], halvedForTime: boolean): Promise<BatchResult[]> => {
+    const read = async (batch: PageText[], halvedForTime: boolean, batchIndex: number): Promise<BatchResult[]> => {
       const key = batch.map((p) => p.page).join(",");
       let held = this.done.get(key);
-      let forTime = halvedForTime;
 
       if (held === undefined) {
-        if (options.signal?.aborted) throw cancelled();
-        // PRIVACY: this is everything that leaves the device. Page numbers and page text, nothing else.
-        const request: ExtractRequestBody = { task: "extract", pages: batch, documentPages: pages.length };
-        let result: AiTransportResult;
-        requests += 1;
-        try {
-          result = await this.transport(request, options.signal);
-        } catch {
-          if (options.signal?.aborted) throw cancelled();
-          throw new AiReaderError("offline", "The AI reader could not be reached. Check your connection and try again.", true);
-        }
-        if (options.signal?.aborted) throw cancelled();
-
-        if (result.status === 200) {
-          const answer = readBatch(result.body, batch);
-          // At the limit with several pages: what was left unreported cannot be known, so the answer is not used.
-          held = answer.atTermLimit && batch.length > 1 ? "split" : answer;
-        } else {
-          const why = batch.length > 1 ? helpedByFewerPages(result) : null;
-          if (why === null || (why === "time" && halvedForTime)) throw failureFrom(result);
-          held = "split";
-          forTime = why === "time";
-        }
+        held = await sendBatch(batch, halvedForTime, batchIndex);
+        // A split is remembered too, so a later try does not send a batch already known to hold too much.
+        // A thrown failure remembers nothing: that batch is still owed.
         this.done.set(key, held);
       }
 
-      if (held === "split") {
+      if (held === "split" || held === "split-time") {
         const middle = Math.ceil(batch.length / 2);
-        return [...(await read(batch.slice(0, middle), forTime)), ...(await read(batch.slice(middle), forTime))];
+        // Only the halves of a time split count as already halved for time. (At the term limit
+        // `sendBatch` returns a plain "split": the limit says nothing about how long pages take.)
+        const halvesForTime = held === "split-time";
+        return [
+          ...(await read(batch.slice(0, middle), halvesForTime, batchIndex)),
+          ...(await read(batch.slice(middle), halvesForTime, batchIndex)),
+        ];
       }
       pagesDone += batch.length;
-      options.onProgress?.({ pagesDone, pagesTotal });
+      reportProgress({
+        phase: "reading",
+        batchFirstPage: batch[0]?.page,
+        batchLastPage: batch[batch.length - 1]?.page,
+        batchIndex,
+        batchTotal: batches.length,
+        message:
+          pagesDone >= pagesTotal ? `All ${pagesTotal} pages with text have been read.` : `Successfully read ${pagesDone} of ${pagesTotal} pages so far.`,
+      });
       return [held];
     };
 
     const results: BatchResult[] = [];
-    for (const batch of batches) results.push(...(await read(batch, false)));
+    for (let i = 0; i < batches.length; i += 1) results.push(...(await read(batches[i], false, i + 1)));
 
     // Put the answers together. Ids are given here, in page order, so they are the same on every run.
     const terms: ContractTerm[] = [];

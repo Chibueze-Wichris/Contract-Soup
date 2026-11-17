@@ -395,10 +395,13 @@ const FAILURES: FailureCase[] = [
   { name: "a success with a term in a shape the app does not know", code: "bad_answer", retryable: true, transport: async () => ({ status: 200, body: { model: "m", terms: [{ nope: true }], risks: [], stats: {} } }) },
 ];
 
+/** Retries without the waiting: the policy is exercised for real in client-retry.test.ts. */
+const NO_WAIT = { sleep: async (): Promise<void> => undefined, random: (): number => 0, now: (): number => 0 };
+
 for (const c of FAILURES) {
   test(`when ${c.name}, the reading fails with "${c.code}" and nothing is read in its place`, async () => {
     const wire = c.transport ? null : makeWire(c.wire);
-    const analyzer = new GeminiAnalyzer(c.transport ?? (wire as NonNullable<typeof wire>).transport);
+    const analyzer = new GeminiAnalyzer(c.transport ?? (wire as NonNullable<typeof wire>).transport, NO_WAIT);
     const err = await failure(() => analyzer.extractTerms(SAMPLE_PAGES));
     assert.equal(err.code, c.code);
     assert.equal(err.retryable, c.retryable);
@@ -442,7 +445,7 @@ test("trying again after a failure only asks for the pages that were not read", 
       return sampleModelAnswerFor(pages);
     },
   });
-  const analyzer = new GeminiAnalyzer(wire.transport);
+  const analyzer = new GeminiAnalyzer(wire.transport, NO_WAIT);
   const pages = longSample();
   const batches = splitIntoBatches(pages).map((b) => b.map((p) => p.page));
   const failing = batches.findIndex((b) => b.includes(6));
@@ -451,7 +454,10 @@ test("trying again after a failure only asks for the pages that were not read", 
   const err = await failure(() => analyzer.extractTerms(pages));
   assert.equal(err.code, "unavailable");
   assert.equal(err.retryable, true);
-  assert.deepEqual(wire.sentPages, batches.slice(0, failing + 1));
+  // The failed batch is first retried where it stands (one send and three retries), and only then does the reading stop.
+  assert.deepEqual(wire.sentPages, [...batches.slice(0, failing + 1), batches[failing], batches[failing], batches[failing]]);
+  assert.deepEqual(err.failedPages, batches[failing], "the error names the batch that could not be read");
+  assert.equal(err.pagesDone, batches.slice(0, failing).reduce((n, b) => n + b.length, 0), "and how much was read before it");
 
   failSecond = false;
   const sentBefore = wire.sentPages.length;
@@ -513,7 +519,7 @@ test("an answer cut short for length is asked again in halves, because asking ag
   assert.match(err.message, /cut short/);
 });
 
-test("when no answer comes in time the pages are halved once, and once more each time the person asks again", async () => {
+test("when no answer comes in time the batch is retried, then halved once, and once more each time the person asks again", async () => {
   const wire = makeWire();
   const asked: number[][] = [];
   let tooSlowAbove = 6;
@@ -524,33 +530,48 @@ test("when no answer comes in time the pages are halved once, and once more each
     return wire.transport(body, signal);
   };
 
-  // Twelve pages get no answer in time. Six do.
-  const analyzer = new GeminiAnalyzer(transport);
+  // Twelve pages get no answer in time: the same batch is asked again (four sends in all) before
+  // it is halved, because a timeout can be Gemini being slow rather than the pages being many. Six do.
+  const analyzer = new GeminiAnalyzer(transport, NO_WAIT);
   const terms = await analyzer.extractTerms(SAMPLE_PAGES);
-  assert.deepEqual(asked, [range(1, 12), range(1, 6), range(7, 12)]);
+  assert.deepEqual(asked, [range(1, 12), range(1, 12), range(1, 12), range(1, 12), range(1, 6), range(7, 12)]);
   const clean = await new GeminiAnalyzer(makeWire().transport).extractTerms(SAMPLE_PAGES);
   assert.deepEqual(terms.map((t) => [t.label, t.pageRef]), clean.map((t) => [t.label, t.pageRef]));
 
-  // Gemini is slower still: six pages get no answer either. The reading stops instead of halving on and on.
+  // Gemini is slower still: six pages get no answer either. Each batch is retried where it
+  // stands, the twelve are halved, a half is retried, and then the reading stops instead of halving on and on.
   asked.length = 0;
   tooSlowAbove = 3;
-  const slow = new GeminiAnalyzer(transport);
+  const slow = new GeminiAnalyzer(transport, NO_WAIT);
   const err = await failure(() => slow.extractTerms(SAMPLE_PAGES));
   assert.equal(err.code, "timeout");
   assert.equal(err.retryable, true);
-  assert.deepEqual(asked, [range(1, 12), range(1, 6)], "two requests without an answer, then it stops");
+  assert.deepEqual(asked, [range(1, 12), range(1, 12), range(1, 12), range(1, 12), range(1, 6), range(1, 6), range(1, 6), range(1, 6)], "each batch is retried, then it stops");
   assert.equal(slow.report, null);
 
   // The person asks again. The twelve pages are not sent whole a second time, and one more halving is allowed.
   asked.length = 0;
   const again = await slow.extractTerms(SAMPLE_PAGES);
-  assert.deepEqual(asked, [range(1, 6), range(1, 3), range(4, 6), range(7, 12), range(7, 9), range(10, 12)]);
+  assert.deepEqual(asked, [
+    range(1, 6),
+    range(1, 6),
+    range(1, 6),
+    range(1, 6),
+    range(1, 3),
+    range(4, 6),
+    range(7, 12),
+    range(7, 12),
+    range(7, 12),
+    range(7, 12),
+    range(7, 9),
+    range(10, 12),
+  ]);
   assert.deepEqual(again.map((t) => [t.label, t.pageRef]), clean.map((t) => [t.label, t.pageRef]));
 
   // The same from the function itself, when Gemini does not answer it in time.
   const viaFunction = makeWire({ answer: (pages) => (pages.length > 6 ? jsonResponse(504, { error: { code: 504, status: "DEADLINE_EXCEEDED" } }) : sampleModelAnswerFor(pages)) });
-  const third = await new GeminiAnalyzer(viaFunction.transport).extractTerms(SAMPLE_PAGES);
-  assert.deepEqual(viaFunction.sentPages, [range(1, 12), range(1, 6), range(7, 12)]);
+  const third = await new GeminiAnalyzer(viaFunction.transport, NO_WAIT).extractTerms(SAMPLE_PAGES);
+  assert.deepEqual(viaFunction.sentPages, [range(1, 12), range(1, 12), range(1, 12), range(1, 12), range(1, 6), range(7, 12)]);
   assert.equal(third.length, clean.length);
 });
 

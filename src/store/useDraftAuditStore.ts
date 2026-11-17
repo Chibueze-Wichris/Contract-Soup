@@ -57,14 +57,19 @@ export interface ContractState {
   stage: "opening" | "pages" | "terms" | "ai";
   pagesDone: number;
   pagesTotal: number;
+  /** What the Gemini reader is doing right now, in words ("Retrying pages 101–125 in 10 seconds…"). Null otherwise. */
+  progressDetail: string | null;
   error: string | null;
   /** Who is reading, or has read, this contract. */
   reader: ReaderKind;
   /**
    * Set when the Gemini reader could not read the contract. The page text is still in memory,
    * so the reading can be tried again or given to the built-in reader, whichever the user picks.
+   * The batch that failed and the pages already read travel with it, so the screen can say what
+   * was kept and what is still owed. The analyzer that holds those pages is kept too (see
+   * `heldReading`), and trying again asks it only for what is missing.
    */
-  aiFailure: { code: string; retryable: boolean } | null;
+  aiFailure: { code: string; retryable: boolean; failedPages: number[]; pagesDone: number; pagesTotal: number } | null;
   /** What the Gemini reader left out and added. Null for the built-in reader. */
   aiReport: AiReadReport | null;
 }
@@ -182,6 +187,7 @@ const EMPTY_CONTRACT: ContractState = {
   stage: "opening",
   pagesDone: 0,
   pagesTotal: 0,
+  progressDetail: null,
   error: null,
   reader: "local",
   aiFailure: null,
@@ -666,6 +672,7 @@ async function readTerms(
     stage: withGemini ? "ai" : "terms",
     pagesDone: withGemini ? 0 : total,
     pagesTotal: total,
+    progressDetail: null,
     error: null,
     aiFailure: null,
     aiReport: null,
@@ -689,8 +696,8 @@ async function readTerms(
       aiRequest = request;
       terms = await gemini.extractTerms(pages, {
         signal: request.signal,
-        onProgress: ({ pagesDone, pagesTotal }) => {
-          if (job === contractJob) set({ contract: { ...working, pagesDone, pagesTotal } });
+        onProgress: ({ pagesDone, pagesTotal, message }) => {
+          if (job === contractJob) set({ contract: { ...working, pagesDone, pagesTotal, progressDetail: message } });
         },
       });
       analyzer = gemini;
@@ -705,6 +712,8 @@ async function readTerms(
     aiRequest = null;
     if (err instanceof AiReaderError) {
       // No silent switch: the draft stops here and says why. The user chooses what happens next.
+      // `heldReading` is deliberately left in place, with the analyzer that already read some of
+      // the batches, so "Try Gemini again" resumes at the failed batch instead of starting over.
       set({
         contract: {
           ...EMPTY_CONTRACT,
@@ -712,7 +721,15 @@ async function readTerms(
           fileName: reading.fileName,
           reader: "gemini",
           error: err.message,
-          aiFailure: { code: err.code, retryable: err.retryable },
+          pagesDone: err.pagesDone ?? 0,
+          pagesTotal: err.pagesTotal ?? 0,
+          aiFailure: {
+            code: err.code,
+            retryable: err.retryable,
+            failedPages: err.failedPages ? [...err.failedPages] : [],
+            pagesDone: err.pagesDone ?? 0,
+            pagesTotal: err.pagesTotal ?? 0,
+          },
         },
       });
       if (!get().wizardOpen) toast.error("Gemini could not read the contract. Open New Audit to choose what to do.");

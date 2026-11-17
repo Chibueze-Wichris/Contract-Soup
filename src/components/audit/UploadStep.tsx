@@ -11,9 +11,19 @@ import { MAX_PDF_BYTES, MAX_PDF_PAGES } from "@/lib/pdf";
 import { readingNotes } from "@/lib/terms";
 import { useDraftAuditStore, type ContractState } from "@/store/useDraftAuditStore";
 
+/** "pages 101–125", for naming the batch a reading stopped on. */
+function failedRange(pages: readonly number[]): string {
+  if (pages.length === 0) return "";
+  const first = pages[0];
+  const last = pages[pages.length - 1];
+  return first === last ? `page ${first}` : `pages ${first}–${last}`;
+}
+
 /** What is happening while a contract is being read, in words. */
 function readingStatus(contract: ContractState): string {
   if (contract.stage === "ai") {
+    // The analyzer says what it is doing, retries and waits included, as it goes.
+    if (contract.progressDetail) return contract.progressDetail;
     return contract.pagesDone > 0
       ? `Gemini has read ${contract.pagesDone} of ${plural(contract.pagesTotal, "page")}`
       : "Gemini is reading the contract. This can take a minute or two.";
@@ -47,7 +57,7 @@ export function UploadStep({ focusHeading }: { focusHeading: boolean }) {
   const { status } = contract;
   const sample = contract.source === "sample";
   const withGemini = contract.reader === "gemini";
-  const pagesKnown = (contract.stage === "pages" || (contract.stage === "ai" && contract.pagesDone > 0)) && contract.pagesTotal > 0;
+  const pagesKnown = (contract.stage === "pages" || contract.stage === "ai") && contract.pagesTotal > 0;
   const blocked = waitingForConsent ? "Tick the box below to agree to send this contract's text to Google Gemini, or choose the built-in reader." : undefined;
   const report = contract.aiReport;
   const notes = report ? readingNotes(report) : null;
@@ -70,6 +80,17 @@ export function UploadStep({ focusHeading }: { focusHeading: boolean }) {
           className="mb-4"
         >
           <p>{contract.error}</p>
+          {contract.aiFailure.failedPages.length > 0 ? (
+            <p className="mt-1">
+              {contract.aiFailure.pagesDone > 0
+                ? `${contract.aiFailure.pagesDone} of ${plural(contract.aiFailure.pagesTotal, "page")} with text had been read when it stopped${
+                    contract.aiFailure.retryable
+                      ? `, and those pages are kept: asking again carries on from ${failedRange(contract.aiFailure.failedPages)} instead of reading them again.`
+                      : "."
+                  } The reading is not finished, so it cannot be used for an audit yet.`
+                : `No pages had been read yet. The reading is not finished, so it cannot be used for an audit yet.`}
+            </p>
+          ) : null}
           <p className="mt-1">
             {contract.aiFailure.retryable
               ? "Nothing has been read in its place. You can ask Gemini again, or have the built-in reader read this contract on this device instead."

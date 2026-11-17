@@ -262,6 +262,12 @@ export function createHandler(deps: HandlerDeps): (req: Request) => Promise<Resp
           httpStatus: info.httpStatus,
           upstreamStatus: info.upstreamStatus,
           schema: info.schema,
+          // Why this attempt is or is not followed by another, and the wait before it. Counts and
+          // codes only: the delay Google asked for is not request data, and nothing else is added.
+          retryAfterSeconds: info.retryAfterSeconds ?? null,
+          willRetry: info.willRetry ?? false,
+          retryDelayMs: info.retryDelayMs ?? null,
+          retryDecision: info.retryDecision ?? "ok",
           // Google's error text can help find a setup problem, but it may repeat part of a request. Off unless asked for.
           ...(logUpstreamText && info.upstreamMessage ? { upstreamMessage: info.upstreamMessage.split(apiKey).join("[key]").slice(0, 300) } : {}),
         });

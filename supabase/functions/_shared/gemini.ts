@@ -60,6 +60,14 @@ export interface AttemptInfo {
   upstreamStatus: string | null;
   upstreamMessage: string | null;
   schema: "strict" | "plain" | "none";
+  /** How long Google asked us to wait before asking again, when it said. */
+  retryAfterSeconds?: number | null;
+  /** True when another attempt follows this one (a retry, or the plain-schema fallback). */
+  willRetry?: boolean;
+  /** The wait before that next attempt, in milliseconds. 0 for the plain-schema fallback. */
+  retryDelayMs?: number | null;
+  /** What was decided after this attempt, and — when nothing follows — why not. */
+  retryDecision?: "ok" | "retry" | "retry_schema_plain" | "give_up_not_retryable" | "give_up_max_retries" | "give_up_deadline" | "give_up_retry_after_beyond_deadline";
 }
 
 export interface GeminiCall<T> {
@@ -241,11 +249,50 @@ export async function callGemini<T>(call: GeminiCall<T>): Promise<GeminiResult<T
     const schema = schemaMode === "none" ? undefined : schemaMode === "strict" ? call.schemas?.strict : call.schemas?.plain;
     try {
       const done = await callOnce(call, schema, Math.min(settings.timeoutMs, remaining));
-      call.onAttempt?.({ attempt, ms: call.now() - started, outcome: "ok", httpStatus: 200, upstreamStatus: null, upstreamMessage: null, schema: schemaMode });
+      call.onAttempt?.({
+        attempt,
+        ms: call.now() - started,
+        outcome: "ok",
+        httpStatus: 200,
+        upstreamStatus: null,
+        upstreamMessage: null,
+        schema: schemaMode,
+        retryAfterSeconds: null,
+        willRetry: false,
+        retryDelayMs: null,
+        retryDecision: "ok",
+      });
       return { value: done.value, attempts: attempt, inputTokens: done.inputTokens, outputTokens: done.outputTokens };
     } catch (err) {
       if (!(err instanceof UpstreamError)) throw err;
       last = err;
+
+      // Decide what happens next before reporting the attempt, so the log says not just that an
+      // attempt failed but whether another follows, after how long, and if none does, why not:
+      // the error cannot pass, the configured retries are used up, or the wait Google asked for
+      // (or our own backoff) plus one more attempt cannot fit before the deadline. In that last
+      // case the error is thrown as it stands, Retry-After included, so the caller in the
+      // browser can wait and ask again instead of the request being treated as refused for good.
+      let decision: NonNullable<AttemptInfo["retryDecision"]> = "give_up_not_retryable";
+      let wait = 0;
+      if (err.code === "upstream_rejected" && err.httpStatus === 400 && schemaMode === "strict") {
+        // A schema the API will not compile is not a reason to give up: say the same thing in words instead.
+        decision = "retry_schema_plain";
+      } else if (!err.retryable) {
+        decision = "give_up_not_retryable";
+      } else if (retries >= settings.maxRetries) {
+        decision = "give_up_max_retries";
+      } else {
+        const nextRetry = retries + 1;
+        const backoff = Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** (nextRetry - 1)) + Math.floor(Math.random() * 250);
+        wait = Math.max(backoff, (err.retryAfterSeconds ?? 0) * 1_000);
+        if (call.now() + wait + MIN_ATTEMPT_MS + SAFETY_MS > call.deadlineAt) {
+          decision = wait === (err.retryAfterSeconds ?? 0) * 1_000 && err.retryAfterSeconds !== null ? "give_up_retry_after_beyond_deadline" : "give_up_deadline";
+        } else {
+          decision = "retry";
+        }
+      }
+      const willRetry = decision === "retry" || decision === "retry_schema_plain";
       call.onAttempt?.({
         attempt,
         ms: call.now() - started,
@@ -254,18 +301,18 @@ export async function callGemini<T>(call: GeminiCall<T>): Promise<GeminiResult<T
         upstreamStatus: err.upstreamStatus,
         upstreamMessage: err.upstreamMessage,
         schema: schemaMode,
+        retryAfterSeconds: err.retryAfterSeconds,
+        willRetry,
+        retryDelayMs: willRetry ? (decision === "retry" ? wait : 0) : null,
+        retryDecision: decision,
       });
 
-      // A schema the API will not compile is not a reason to give up: say the same thing in words instead.
-      if (err.code === "upstream_rejected" && err.httpStatus === 400 && schemaMode === "strict") {
+      if (decision === "retry_schema_plain") {
         schemaMode = "plain";
         continue;
       }
-      if (!err.retryable || retries >= settings.maxRetries) throw err;
+      if (!willRetry) throw err;
       retries += 1;
-      const backoff = Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** (retries - 1)) + Math.floor(Math.random() * 250);
-      const wait = Math.max(backoff, (err.retryAfterSeconds ?? 0) * 1_000);
-      if (call.now() + wait + MIN_ATTEMPT_MS + SAFETY_MS > call.deadlineAt) throw err;
       await call.sleep(wait);
     }
   }
